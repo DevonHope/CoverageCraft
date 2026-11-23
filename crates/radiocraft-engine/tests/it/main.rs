@@ -988,6 +988,229 @@ fn a_design_exported_in_the_background_opens_from_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A square room (outer walls) in a DXF, drawn with its corner at `x0`.
+fn room_dxf(x0: f64) -> String {
+    let ring = |a: f64, b: f64| {
+        format!(
+            "0\nLWPOLYLINE\n8\nA-WALL\n90\n4\n70\n1\n10\n{}\n20\n{}\n10\n{}\n20\n{}\n10\n{}\n20\n{}\n10\n{}\n20\n{}\n",
+            x0 + a,
+            a,
+            x0 + b,
+            a,
+            x0 + b,
+            b,
+            x0 + a,
+            b
+        )
+    };
+    format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{}{}0\nENDSEC\n0\nEOF\n",
+        ring(0.0, 6000.0),
+        ring(150.0, 5850.0)
+    )
+}
+
+/// Floors: a router a floor up is heard through the slab; two floors up through two; floors
+/// line up by their offsets; a project keeps them; adding, changing and removing undo; showing
+/// another floor isn't an edit; and bad floor commands are refused.
+#[test]
+fn floors_stack() {
+    let dir = std::env::temp_dir().join(format!("radiocraft-floors-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (ground, upper) = (dir.join("ground.dxf"), dir.join("upper.dxf"));
+    std::fs::write(&ground, room_dxf(0.0)).unwrap();
+    // The upper floor's plan is drawn 20 m to the right: its offset brings it over the ground's.
+    std::fs::write(&upper, room_dxf(20000.0)).unwrap();
+    let mut e = Engine::new();
+    run(
+        &mut e,
+        "plan.open",
+        json!({"path": ground.to_string_lossy()}),
+    );
+    assert_eq!(
+        run(&mut e, "floor.list", json!({}))["floors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let added = run(
+        &mut e,
+        "floor.add",
+        json!({"name": "Upstairs", "offset": [-20000, 0]}),
+    );
+    assert_eq!(added["index"], 1);
+    let info = run(
+        &mut e,
+        "plan.open",
+        json!({"path": upper.to_string_lossy()}),
+    );
+    assert_eq!(info["bounds"], json!([0.0, 0.0, 6000.0, 6000.0]), "{info}");
+    assert_eq!(info["floor"], 1);
+    // A router upstairs, 1 m above its floor (4 m up); the probe downstairs straight below, at
+    // 1 m: 3 m apart, one concrete slab: 20 − 47.257 − 22·log10(3) − 20 = −57.75 dBm.
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [3000, 3000], "height": 1000, "eirp_dbm": 20, "name": "Up"}),
+    );
+    run(&mut e, "floor.select", json!({"index": 0}));
+    let below = run(&mut e, "coverage.at", json!({"at": [3000, 3000]}));
+    assert_eq!(below["bands"]["5"]["rssi_dbm"], -57.8, "{below}");
+    assert_eq!(below["bands"]["5"]["floor"], 1);
+    // Showing another floor isn't an edit.
+    let h = run(&mut e, "edit.history", json!({}));
+    assert_eq!(
+        h["undo"],
+        json!(["Add Floor", "Open Plan", "Add Router"]),
+        "{h}"
+    );
+    // Two floors up: 6 m and two slabs: 20 − 47.257 − 22·log10(6) − 40 = −84.38 dBm.
+    run(&mut e, "floor.add", json!({"name": "Roof"}));
+    run(&mut e, "router.set", json!({"id": 1, "floor": 2}));
+    run(&mut e, "floor.select", json!({"index": 0}));
+    assert_eq!(
+        run(&mut e, "coverage.at", json!({"at": [3000, 3000]}))["bands"]["5"]["rssi_dbm"],
+        -84.4
+    );
+    // A slab of "not a wall" (an atrium) costs nothing: 20 − 47.257 − 17.12 − 20 (the upper one).
+    run(&mut e, "floor.set", json!({"index": 2, "slab": "ignore"}));
+    assert_eq!(
+        run(&mut e, "coverage.at", json!({"at": [3000, 3000]}))["bands"]["5"]["rssi_dbm"],
+        -64.4
+    );
+    // Undo the slab, the router's move and the roof.
+    run(&mut e, "edit.undo", json!({}));
+    assert_eq!(
+        run(&mut e, "coverage.at", json!({"at": [3000, 3000]}))["bands"]["5"]["rssi_dbm"],
+        -84.4
+    );
+    run(&mut e, "edit.undo", json!({}));
+    run(&mut e, "edit.undo", json!({}));
+    assert_eq!(
+        run(&mut e, "floor.list", json!({}))["floors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        run(&mut e, "coverage.at", json!({"at": [3000, 3000]}))["bands"]["5"]["rssi_dbm"],
+        -57.8
+    );
+    // A project keeps the floors, their offsets, the router's floor and the floor shown.
+    let project = dir.join("house.rcraft");
+    run(
+        &mut e,
+        "project.save",
+        json!({"path": project.to_string_lossy()}),
+    );
+    let text = std::fs::read_to_string(&project).unwrap();
+    assert!(text.contains("radiocraft-project/2"));
+    let mut again = Engine::new();
+    run(
+        &mut again,
+        "project.open",
+        json!({"path": project.to_string_lossy()}),
+    );
+    let floors = run(&mut again, "floor.list", json!({}));
+    assert_eq!(floors["floors"][1]["name"], "Upstairs");
+    assert_eq!(floors["floors"][1]["offset"], json!([-20000.0, 0.0]));
+    assert_eq!(floors["active"], 0);
+    assert_eq!(
+        run(&mut again, "coverage.at", json!({"at": [3000, 3000]}))["bands"]["5"]["rssi_dbm"],
+        -57.8
+    );
+    // Removing a floor takes its routers; undo brings both back.
+    run(&mut again, "floor.remove", json!({"index": 1}));
+    assert_eq!(run(&mut again, "router.list", json!({})), json!([]));
+    run(&mut again, "edit.undo", json!({}));
+    assert_eq!(run(&mut again, "router.list", json!({}))[0]["floor"], 1);
+    // Refused.
+    for (command, params) in [
+        ("floor.select", json!({"index": 9})),
+        ("floor.remove", json!({})),
+        ("floor.set", json!({"index": 5, "name": "x"})),
+        ("floor.set", json!({"elevation": 1e300})),
+        ("floor.set", json!({"offset": ["a", 1]})),
+        ("floor.set", json!({"slab": "auto"})),
+        ("floor.set", json!({"slab": "brick"})),
+        ("router.add", json!({"at": [0, 0], "floor": 7})),
+        (
+            "survey.add",
+            json!({"at": [0, 0], "band": "5", "rssi_dbm": -50, "floor": 7}),
+        ),
+    ] {
+        assert!(
+            again.execute(command, &params).is_err(),
+            "{command} {params}"
+        );
+    }
+    run(&mut again, "floor.remove", json!({"index": 1}));
+    assert!(
+        again.execute("floor.remove", &json!({"index": 0})).is_err(),
+        "the last floor stays"
+    );
+    for _ in 0..31 {
+        run(&mut again, "floor.add", json!({}));
+    }
+    assert!(
+        again.execute("floor.add", &json!({})).is_err(),
+        "32 floors at most"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A model seen from a side shows the shown floor alone, and says so.
+#[test]
+fn floors_stack_only_from_the_top() {
+    let dir = std::env::temp_dir().join(format!("radiocraft-floors-side-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("room.obj");
+    std::fs::write(&path, solidcraft_obj()).unwrap();
+    let mut e = Engine::new();
+    run(
+        &mut e,
+        "plan.open",
+        json!({"path": path.to_string_lossy(), "slice_height": 1000}),
+    );
+    run(&mut e, "floor.add", json!({}));
+    // The same model on the floor above is cut 3 m higher: above its walls, so nothing to see.
+    assert!(
+        e.execute("plan.open", &json!({"path": path.to_string_lossy()}))
+            .is_ok()
+    );
+    assert_eq!(e.settings().slice_height, 4000.0);
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [1000, 1500], "height": 1000, "eirp_dbm": 20}),
+    );
+    run(&mut e, "floor.select", json!({"index": 0}));
+    assert!(run(&mut e, "coverage.at", json!({"at": [1000, 1500]}))["bands"]["5"].is_object());
+    run(
+        &mut e,
+        "settings.set",
+        json!({"viewpoint": "front", "slice_height": -1500}),
+    );
+    let info = run(&mut e, "plan.info", json!({}));
+    assert!(
+        info["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n.as_str().unwrap_or("").contains("floors stack")),
+        "{info}"
+    );
+    // The router upstairs doesn't send in the side view.
+    assert!(
+        run(&mut e, "coverage.at", json!({"at": [1000, 1000]}))["bands"]
+            .get("5")
+            .is_none()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A project saved before channels and maps existed opens, with them unset.
 #[test]
 fn an_older_project_opens() {

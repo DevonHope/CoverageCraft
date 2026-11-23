@@ -7,9 +7,11 @@ use serde_json::{Value, json};
 
 use crate::devices::{self, Device, EIRP_CAP_DBM};
 use crate::dxf::read_dxf;
+use crate::floors::{Floor, MAX_FLOORS, slab_db};
 use crate::materials::{Band, Material, RF_PRESETS};
 use crate::mesh::{Up, read_mesh};
 use crate::model::{self, Cell, Emitter, Grid, Model, Scratch, WallMap};
+use crate::model::{Building, Storey};
 use crate::plan::{FloorPlan, SourceKind};
 use crate::radio::{Channel, HEARD_DBM, View, default_width, link_rate};
 use crate::survey::{self, Point};
@@ -65,6 +67,8 @@ pub struct Router {
     pub power: Power,
     /// Its channel in each band (2.4, 5, 6 GHz); `None` where it isn't set.
     pub channels: [Option<Channel>; 3],
+    /// The floor it is on (by index).
+    pub floor: usize,
 }
 
 /// The analysis settings.
@@ -122,6 +126,8 @@ pub struct Field {
     /// Where the floor came from: "enclosed" or "open".
     pub floor: &'static str,
     pub walls: Arc<WallMap>,
+    /// Every floor's walls and slabs, as signals cross them.
+    pub building: Arc<Building>,
     /// `cell * routers + router` (dBm); NaN where not worked out.
     pub signals: Vec<f32>,
     pub names: Vec<String>,
@@ -153,7 +159,13 @@ pub struct Coverage {
 
 /// RadioCraft's state.
 pub struct Engine {
-    plan: Option<FloorPlan>,
+    /// The shown floor's plan (the others' are parked in `floors`).
+    plan: Option<Arc<FloorPlan>>,
+    /// The building's floors, and which is shown.
+    floors: Vec<Floor>,
+    active: usize,
+    /// Walls of the floors not shown, by floor, with the plan they were built from.
+    floor_walls: Vec<Option<(usize, Arc<WallMap>)>>,
     routers: Vec<Router>,
     next_router: u64,
     settings: Settings,
@@ -185,6 +197,9 @@ impl Default for Engine {
     fn default() -> Self {
         Engine {
             plan: None,
+            floors: vec![Floor::new("Floor 1", 0.0, 1000.0)],
+            active: 0,
+            floor_walls: Vec::new(),
             routers: Vec::new(),
             next_router: 1,
             settings: Settings::default(),
@@ -215,6 +230,26 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "{values?: bool, leakage?: bool} → the shown band's figures: coverage, second-router (roaming) cover, link rate, channel overlap; leakage: the area outside the walls with signal (values: every cell's signal)",
     ),
     ("devices.list", "{} → the devices a router can name"),
+    (
+        "floor.add",
+        "{name?, elevation?: mm, offset?: [x, y] mm, slab?: material} → a new floor, shown (plan.open opens its plan); elevation defaults to 3 m above the highest",
+    ),
+    (
+        "floor.list",
+        "{} → the floors: name, elevation, offset, slab, cut, plan, which is shown",
+    ),
+    (
+        "floor.remove",
+        "{index} → remove a floor with its routers and measured points (one floor stays)",
+    ),
+    (
+        "floor.select",
+        "{index} → show another floor (not an edit: undo doesn't go back to it)",
+    ),
+    (
+        "floor.set",
+        "{index?: the shown one, name?, elevation?, offset?: [x, y] (moves its plan), slab?: preset id | ignore | {\"2.4\",\"5\",\"6\": dB}}",
+    ),
     (
         "edit.checkpoint",
         "{} → end the current group of edits: the next move or change of the same thing is a step of its own",
@@ -452,7 +487,7 @@ impl Engine {
     }
 
     pub fn plan(&self) -> Option<&FloorPlan> {
-        self.plan.as_ref()
+        self.plan.as_deref()
     }
 
     pub fn routers(&self) -> &[Router] {
@@ -497,7 +532,11 @@ impl Engine {
             }
             _ => {}
         }
-        let kind = history_kind(command);
+        let mut kind = history_kind(command);
+        // With several floors, opening a floor's plan is part of building the project: an edit.
+        if command == "plan.open" && self.floors.len() > 1 {
+            kind = History::Edit;
+        }
         let before = (kind == History::Edit).then(|| self.snapshot());
         let result = self.execute_inner(command, params);
         if result.is_ok() {
@@ -559,7 +598,11 @@ impl Engine {
             "report.export" => self.report_export(command, p),
             "survey.import" => self.survey_import(command, p),
             "survey.add" => {
-                let point = survey::from_json(p).map_err(|e| bad(command, e))?;
+                let mut point = survey::from_json(p).map_err(|e| bad(command, e))?;
+                if point.floor.is_some_and(|f| f >= self.floors.len()) {
+                    return Err(bad(command, "`floor` is a floor's index"));
+                }
+                point.floor.get_or_insert(self.active);
                 if self.survey.len() >= survey::MAX_POINTS {
                     return Err(bad(command, format!("at most {} points", survey::MAX_POINTS)));
                 }
@@ -574,6 +617,9 @@ impl Engine {
             }
             "survey.compare" => self.survey_compare(command, p),
             "survey.calibrate" => self.survey_calibrate(command, p),
+            "floor.add" | "floor.list" | "floor.remove" | "floor.select" | "floor.set" => {
+                self.floor_command(command, p)
+            }
             other => Err(EngineError::Unknown(other.to_string())),
         }
     }
@@ -581,16 +627,8 @@ impl Engine {
     /// What an edit can change, to put back.
     fn snapshot(&self) -> Snapshot {
         Snapshot {
-            materials: self
-                .plan
-                .as_ref()
-                .map(|p| {
-                    p.sources
-                        .iter()
-                        .map(|s| (s.name.clone(), s.kind, s.material.clone()))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            floors: self.all_floors(),
+            active: self.active,
             routers: self.routers.clone(),
             next_router: self.next_router,
             settings: self.settings.clone(),
@@ -657,39 +695,21 @@ impl Engine {
         Ok(json!({if undo { "undone" } else { "redone" }: label}))
     }
 
-    /// Put a snapshot back: cut the model again if it was seen otherwise, then the rest. The
-    /// band and map shown stay as they are.
-    fn restore(&mut self, command: &str, snap: &Snapshot) -> Result<()> {
-        let s = &snap.settings;
-        let recut = self.plan_is_model()
-            && (s.slice_height != self.settings.slice_height
-                || s.up != self.settings.up
-                || s.viewpoint != self.settings.viewpoint);
-        let settings = Settings {
+    /// Put a snapshot back: the floors with their plans as they were (kept, not read again), the
+    /// routers, settings, measurements and devices. The band and map shown stay as they are, and
+    /// so does the floor shown if it is still there.
+    fn restore(&mut self, _command: &str, snap: &Snapshot) -> Result<()> {
+        self.settings = Settings {
             band: self.settings.band,
             view: self.settings.view,
-            ..s.clone()
+            ..snap.settings.clone()
         };
-        let old = std::mem::replace(&mut self.settings, settings);
-        if recut
-            && let Some(path) = self.plan.as_ref().map(|p| p.path.clone())
-            && let Err(e) = self.plan_open(command, &json!({"path": path}))
-        {
-            self.settings = old;
-            self.changed(true);
-            return Err(e);
-        }
-        if let Some(plan) = self.plan.as_mut() {
-            for src in &mut plan.sources {
-                if let Some((_, _, m)) = snap
-                    .materials
-                    .iter()
-                    .find(|(n, k, _)| *n == src.name && *k == src.kind)
-                {
-                    src.material = m.clone();
-                }
-            }
-        }
+        let active = if self.active < snap.floors.len() {
+            self.active
+        } else {
+            snap.active
+        };
+        self.set_floors(snap.floors.clone(), active);
         self.routers = snap.routers.clone();
         self.next_router = snap.next_router;
         self.survey = snap.survey.clone();
@@ -697,6 +717,262 @@ impl Engine {
         self.devices_file = snap.devices_file.clone();
         self.changed(true);
         Ok(())
+    }
+
+    /// Every floor, the shown one's plan and cut in its place.
+    fn all_floors(&self) -> Vec<Floor> {
+        let mut floors = self.floors.clone();
+        if let Some(f) = floors.get_mut(self.active) {
+            f.plan = self.plan.clone();
+            f.cut = self.settings.slice_height;
+        }
+        floors
+    }
+
+    /// Put `floors` in place and show floor `active`.
+    fn set_floors(&mut self, mut floors: Vec<Floor>, active: usize) {
+        let active = active.min(floors.len().saturating_sub(1));
+        if let Some(f) = floors.get_mut(active) {
+            self.plan = f.plan.take();
+            self.settings.slice_height = f.cut;
+        }
+        self.floors = floors;
+        self.active = active;
+        self.floor_walls.clear();
+    }
+
+    /// The building's floors as the signal sees them. From a side the shown floor stands alone.
+    fn building(&mut self) -> Option<Building> {
+        let walls = self.walls()?;
+        if self.floors.len() < 2 || self.side_view() {
+            return Some(Building::new(vec![Storey {
+                elevation: 0.0,
+                walls,
+                slab_db: [0.0; 3],
+            }]));
+        }
+        let mut storeys = Vec::with_capacity(self.floors.len());
+        for i in 0..self.floors.len() {
+            let w = if i == self.active {
+                walls.clone()
+            } else {
+                self.floor_walls(i)
+            };
+            if let Some(f) = self.floors.get(i) {
+                storeys.push(Storey {
+                    elevation: f.elevation,
+                    walls: w,
+                    slab_db: slab_db(&f.slab),
+                });
+            }
+        }
+        Some(Building::new(storeys))
+    }
+
+    /// The walls of a floor not shown, built once per plan.
+    fn floor_walls(&mut self, i: usize) -> Arc<WallMap> {
+        let Some(plan) = self.floors.get(i).and_then(|f| f.plan.clone()) else {
+            return Arc::new(WallMap::default());
+        };
+        let key = Arc::as_ptr(&plan) as usize;
+        if self.floor_walls.len() < self.floors.len() {
+            self.floor_walls.resize(self.floors.len(), None);
+        }
+        if let Some(Some((k, w))) = self.floor_walls.get(i)
+            && *k == key
+        {
+            return w.clone();
+        }
+        let w = Arc::new(plan.walls());
+        if let Some(slot) = self.floor_walls.get_mut(i) {
+            *slot = Some((key, w.clone()));
+        }
+        w
+    }
+
+    /// Whether a model is seen from a side (floors don't stack then).
+    fn side_view(&self) -> bool {
+        self.plan_is_model() && self.settings.viewpoint != "top"
+    }
+
+    fn elevation(&self, floor: usize) -> f64 {
+        self.floors.get(floor).map_or(0.0, |f| f.elevation)
+    }
+
+    fn floor_index(&self, command: &str, p: &Value, key: &str) -> Result<Option<usize>> {
+        match p.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => v
+                .as_u64()
+                .and_then(|i| usize::try_from(i).ok())
+                .filter(|i| *i < self.floors.len())
+                .map(Some)
+                .ok_or_else(|| {
+                    bad(
+                        command,
+                        format!(
+                            "`{key}` is a floor's index, 0 to {}",
+                            self.floors.len().saturating_sub(1)
+                        ),
+                    )
+                }),
+        }
+    }
+
+    fn floor_command(&mut self, command: &str, p: &Value) -> Result<Value> {
+        match command {
+            "floor.list" => Ok(self.floors_json()),
+            "floor.select" => {
+                let i = self
+                    .floor_index(command, p, "index")?
+                    .ok_or_else(|| bad(command, "`index` is a floor's index"))?;
+                if i != self.active {
+                    let floors = self.all_floors();
+                    self.set_floors(floors, i);
+                    self.changed(true);
+                }
+                Ok(self.floors_json())
+            }
+            "floor.add" => {
+                if self.floors.len() >= MAX_FLOORS {
+                    return Err(bad(command, format!("at most {MAX_FLOORS} floors")));
+                }
+                let top = self
+                    .floors
+                    .iter()
+                    .map(|f| f.elevation)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let elevation = ranged(command, p, "elevation", -MAX_COORD, MAX_COORD)?
+                    .unwrap_or(if top.is_finite() { top + 3000.0 } else { 0.0 });
+                let name = p
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|n| !n.trim().is_empty())
+                    .map_or_else(
+                        || format!("Floor {}", self.floors.len() + 1),
+                        str::to_string,
+                    );
+                let mut floor = Floor::new(name, elevation, self.settings.slice_height);
+                self.floor_fields(command, p, &mut floor)?;
+                let mut floors = self.all_floors();
+                floors.push(floor);
+                let i = floors.len() - 1;
+                self.set_floors(floors, i);
+                self.changed(true);
+                Ok(json!({"index": i, "floors": self.floors_json()}))
+            }
+            "floor.set" => {
+                let i = self
+                    .floor_index(command, p, "index")?
+                    .unwrap_or(self.active);
+                let mut floors = self.all_floors();
+                let mut floor = floors
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| bad(command, "no such floor"))?;
+                let old_offset = floor.offset;
+                if let Some(n) = p
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|n| !n.trim().is_empty())
+                {
+                    floor.name = n.to_string();
+                }
+                if let Some(e) = ranged(command, p, "elevation", -MAX_COORD, MAX_COORD)? {
+                    floor.elevation = e;
+                }
+                self.floor_fields(command, p, &mut floor)?;
+                // A new offset moves the floor's plan in the building.
+                let d = [
+                    floor.offset[0] - old_offset[0],
+                    floor.offset[1] - old_offset[1],
+                ];
+                if d != [0.0, 0.0]
+                    && let Some(plan) = floor.plan.as_mut()
+                {
+                    Arc::make_mut(plan).translate(d);
+                }
+                if let Some(slot) = floors.get_mut(i) {
+                    *slot = floor;
+                }
+                let active = self.active;
+                self.set_floors(floors, active);
+                self.changed(true);
+                Ok(self.floors_json())
+            }
+            "floor.remove" => {
+                let i = self
+                    .floor_index(command, p, "index")?
+                    .ok_or_else(|| bad(command, "`index` is a floor's index"))?;
+                if self.floors.len() < 2 {
+                    return Err(bad(command, "a project keeps at least one floor"));
+                }
+                let mut floors = self.all_floors();
+                floors.remove(i);
+                // Its routers and measured points go with it; the others keep their floor.
+                self.routers.retain(|r| r.floor != i);
+                for r in &mut self.routers {
+                    if r.floor > i {
+                        r.floor -= 1;
+                    }
+                }
+                if self
+                    .survey
+                    .iter()
+                    .any(|pt| pt.floor.is_some_and(|f| f >= i))
+                {
+                    let pts = Arc::make_mut(&mut self.survey);
+                    pts.retain(|pt| pt.floor != Some(i));
+                    for pt in pts.iter_mut() {
+                        if let Some(f) = pt.floor.as_mut()
+                            && *f > i
+                        {
+                            *f -= 1;
+                        }
+                    }
+                }
+                let active = if self.active > i {
+                    self.active - 1
+                } else {
+                    self.active.min(floors.len() - 1)
+                };
+                self.set_floors(floors, active);
+                self.changed(true);
+                Ok(self.floors_json())
+            }
+            _ => Err(EngineError::Unknown(command.to_string())),
+        }
+    }
+
+    /// A floor's offset and slab from `p`.
+    fn floor_fields(&self, command: &str, p: &Value, floor: &mut Floor) -> Result<()> {
+        if p.get("offset").is_some_and(|v| !v.is_null()) {
+            floor.offset = point(command, p, "offset")?;
+        }
+        if let Some(v) = p.get("slab").filter(|v| !v.is_null()) {
+            let m = Material::from_json(v)
+                .filter(|m| *m != Material::Auto)
+                .ok_or_else(|| {
+                    bad(
+                        command,
+                        "`slab` is a preset id, ignore (no slab) or {\"2.4\", \"5\", \"6\": dB}",
+                    )
+                })?;
+            floor.slab = m;
+        }
+        Ok(())
+    }
+
+    fn floors_json(&self) -> Value {
+        let floors = self.all_floors();
+        json!({
+            "active": self.active,
+            "floors": floors
+                .iter()
+                .enumerate()
+                .map(|(i, f)| f.to_json(i, i == self.active, f.plan.as_ref().map(|p| p.path.as_str())))
+                .collect::<Vec<_>>(),
+        })
     }
 
     fn history_json(&self) -> Value {
@@ -734,9 +1010,21 @@ impl Engine {
         if let Some(v) = p.get("viewpoint").and_then(Value::as_str) {
             self.settings.viewpoint = v.trim().to_string();
         }
-        let plan = self.read_plan(command, &path)?;
+        // The same model on another floor: cut it as far above that floor's cut as this floor
+        // is above that one (a building modelled whole), unless a cut is given.
+        if p.get("slice_height").is_none_or(Value::is_null)
+            && let Some(other) = self.floors.iter().enumerate().find(|(i, f)| {
+                *i != self.active && f.plan.as_ref().is_some_and(|pl| pl.path == path)
+            })
+        {
+            let elevation = self.floors.get(self.active).map_or(0.0, |f| f.elevation);
+            self.settings.slice_height = other.1.cut + elevation - other.1.elevation;
+        }
+        let mut plan = self.read_plan(command, &path)?;
+        if let Some(f) = self.floors.get(self.active) {
+            plan.translate(f.offset);
+        }
         // Keep the materials of sources the new plan still has.
-        let mut plan = plan;
         if let Some(old) = &self.plan {
             for s in &mut plan.sources {
                 if let Some(o) = old
@@ -748,7 +1036,7 @@ impl Engine {
                 }
             }
         }
-        self.plan = Some(plan);
+        self.plan = Some(Arc::new(plan));
         self.changed(true);
         self.plan_info(command)
     }
@@ -879,6 +1167,12 @@ impl Engine {
             .as_ref()
             .ok_or_else(|| bad(command, "no plan is open (plan.open)"))?;
         let counts = plan.shape_counts();
+        let mut notes = plan.notes.clone();
+        if self.floors.len() > 1 && self.side_view() {
+            notes.push(
+                "floors stack in the top view; from a side only the shown floor counts".into(),
+            );
+        }
         Ok(json!({
             "path": plan.path,
             "sources": plan.sources.iter().enumerate().map(|(i, s)| json!({
@@ -888,10 +1182,12 @@ impl Engine {
                 "shapes": counts.get(&i).copied().unwrap_or(0),
             })).collect::<Vec<_>>(),
             "bounds": plan.bounds(),
-            "notes": plan.notes,
+            "notes": notes,
             "presets": RF_PRESETS.iter().map(|p| p.id).collect::<Vec<_>>(),
             "viewpoints": plan.views.iter().map(PlanView::to_json).collect::<Vec<_>>(),
             "viewpoint": self.settings.viewpoint,
+            "floor": self.active,
+            "floors": self.floors.len(),
         }))
     }
 
@@ -913,6 +1209,7 @@ impl Engine {
         let plan = self
             .plan
             .as_mut()
+            .map(Arc::make_mut)
             .ok_or_else(|| bad(command, "no plan is open (plan.open)"))?;
         let mut hits = 0;
         for s in plan
@@ -989,6 +1286,9 @@ impl Engine {
             .and_then(Value::as_str)
             .filter(|n| !n.trim().is_empty())
             .map_or_else(|| format!("Router {id}"), str::to_string);
+        let floor = self
+            .floor_index(command, p, "floor")?
+            .unwrap_or(self.active);
         self.routers.push(Router {
             id,
             name,
@@ -996,6 +1296,7 @@ impl Engine {
             height,
             power,
             channels,
+            floor,
         });
         self.changed(false);
         Ok(json!({"id": id}))
@@ -1026,6 +1327,7 @@ impl Engine {
         };
         let add = p.get("add").and_then(Value::as_bool).unwrap_or(false);
         let probe = Router {
+            floor: self.active,
             id: 0,
             name: String::new(),
             at: [0.0, 0.0],
@@ -1037,7 +1339,11 @@ impl Engine {
         let template = Emitter {
             name: "suggested".into(),
             at: [0.0, 0.0],
-            height,
+            height: if self.side_view() {
+                height
+            } else {
+                self.elevation(self.active) + height
+            },
             eirp_dbm: self.eirp(&probe),
         };
         if template.eirp(band).is_none() {
@@ -1053,7 +1359,7 @@ impl Engine {
             )
         })?;
         let spots = crate::placement::suggest(
-            &f.walls,
+            &*f.building,
             &f.grid,
             &f.cells,
             &self.emitters(),
@@ -1096,6 +1402,7 @@ impl Engine {
         let i = self.router(command, p)?;
         let height = ranged(command, p, "height", -MAX_COORD, MAX_COORD)?;
         let power = self.power(command, p)?;
+        let floor = self.floor_index(command, p, "floor")?;
         let channels = match (p.get("channels"), self.routers.get(i)) {
             (Some(v), Some(r)) if !v.is_null() => Some(channels_param(command, v, r.channels)?),
             _ => None,
@@ -1114,6 +1421,9 @@ impl Engine {
             }
             if let Some(name) = name {
                 r.name = name;
+            }
+            if let Some(f) = floor {
+                r.floor = f;
             }
             if let Some(c) = channels {
                 r.channels = c;
@@ -1139,7 +1449,7 @@ impl Engine {
             Power::Device(id) => (Some(id.clone()), self.eirp(r)),
             Power::Eirp(e) => (None, self.cap(*e)),
         };
-        json!({"id": r.id, "name": r.name, "at": r.at, "height": r.height, "device": device, "eirp_dbm": band_map(&eirp), "channels": channels_json(&r.channels)})
+        json!({"id": r.id, "name": r.name, "at": r.at, "height": r.height, "device": device, "eirp_dbm": band_map(&eirp), "channels": channels_json(&r.channels), "floor": r.floor})
     }
 
     fn cap(&self, eirp: [Option<f64>; 3]) -> [Option<f64>; 3] {
@@ -1319,27 +1629,38 @@ impl Engine {
         })
     }
 
+    /// The routers as the model sees them, in the routers' order: heights in the building (their
+    /// floor's elevation added). From a side only the shown floor's routers send.
     fn emitters(&self) -> Vec<Emitter> {
+        let side = self.side_view();
         self.routers
             .iter()
             .map(|r| Emitter {
                 name: r.name.clone(),
                 at: r.at,
-                height: r.height,
-                eirp_dbm: self.eirp(r),
+                height: if side {
+                    r.height
+                } else {
+                    self.elevation(r.floor) + r.height
+                },
+                eirp_dbm: if side && r.floor != self.active {
+                    [None; 3]
+                } else {
+                    self.eirp(r)
+                },
             })
             .collect()
     }
 
     fn model(&self) -> Model {
         // From a side, the map's points lie on the cut: the receiver is at the cut's depth.
-        let side = self.plan_is_model() && self.settings.viewpoint != "top";
+        let side = self.side_view();
         Model {
             exponent: self.settings.exponent,
             client_height: if side {
                 self.settings.slice_height
             } else {
-                self.settings.client_height
+                self.elevation(self.active) + self.settings.client_height
             },
             offset_db: self.settings.offset_db,
         }
@@ -1440,7 +1761,8 @@ impl Engine {
             Some(Cell::Outside) => outside,
             _ => false,
         };
-        let signals = model::signals(&walls, &emitters, &self.model(), s.band, &grid, &keep);
+        let building = Arc::new(self.building()?);
+        let signals = model::signals(&*building, &emitters, &self.model(), s.band, &grid, &keep);
         let channels: Vec<Option<Channel>> = self
             .routers
             .iter()
@@ -1470,6 +1792,7 @@ impl Engine {
             cells,
             floor,
             walls,
+            building,
             signals,
             names: emitters.iter().map(|e| e.name.clone()).collect(),
             channels,
@@ -1596,11 +1919,12 @@ impl Engine {
     fn coverage_at(&mut self, command: &str, p: &Value) -> Result<Value> {
         let at = point(command, p, "at")?;
         let walls = self
-            .walls()
+            .building()
             .ok_or_else(|| bad(command, "no plan is open (plan.open)"))?;
         let emitters = self.emitters();
         let model = self.model();
         let round = |v: f64| (v * 10.0).round() / 10.0;
+        use crate::model::PathLoss;
         let mut scratch = Scratch::default();
         let mut out = serde_json::Map::new();
         for band in Band::ALL {
@@ -1638,7 +1962,8 @@ impl Engine {
                 json!({
                     "rssi_dbm": round(best),
                     "from": from.map(|e| e.name.clone()),
-                    "walls_db": from.map(|e| round(walls.path_loss(e.at, at, band, &mut scratch))),
+                    "walls_db": from.map(|e| round(walls.loss([e.at[0], e.at[1], e.height], [at[0], at[1], model.client_height], band, &mut scratch))),
+                    "floor": self.routers.get(k).map(|r| r.floor),
                     "routers": heard.iter().take(3).map(|(v, j)| json!({
                         "name": emitters.get(*j).map(|e| e.name.clone()),
                         "rssi_dbm": round(*v),
@@ -1949,8 +2274,26 @@ impl Engine {
         let bytes = read_file(command, path)?;
         let text = String::from_utf8(bytes)
             .map_err(|_| bad(command, format!("{path}: not UTF-8 text")))?;
+        let previous = self.survey.clone();
         self.survey =
             Arc::new(survey::parse(&text, json).map_err(|e| bad(command, format!("{path}: {e}")))?);
+        // Points without a floor are on the floor shown; one naming no floor of ours is refused.
+        let floors = self.floors.len();
+        if self
+            .survey
+            .iter()
+            .any(|pt| pt.floor.is_some_and(|f| f >= floors))
+        {
+            self.survey = previous;
+            return Err(bad(
+                command,
+                format!("{path}: a point's floor isn't one of the {floors} floors"),
+            ));
+        }
+        let active = self.active;
+        for pt in Arc::make_mut(&mut self.survey).iter_mut() {
+            pt.floor.get_or_insert(active);
+        }
         self.revision = self.revision.wrapping_add(1);
         Ok(json!({"points": self.survey.len()}))
     }
@@ -1960,14 +2303,29 @@ impl Engine {
     /// fit terms. Points naming a router that isn't there, or with no router in their band, are
     /// left out.
     fn survey_terms(&mut self) -> Vec<(usize, f64, f64, survey::Term)> {
-        let Some(walls) = self.walls() else {
+        let Some(walls) = self.building() else {
             return Vec::new();
         };
+        use crate::model::PathLoss;
         let emitters = self.emitters();
-        let model = self.model();
+        let shown = self.model();
+        let side = self.side_view();
         let mut scratch = Scratch::default();
         let mut out = Vec::new();
         for (i, pt) in self.survey.iter().enumerate() {
+            // Each point is compared on its own floor (from a side, only the shown floor's).
+            let floor = pt.floor.unwrap_or(self.active);
+            if side && floor != self.active {
+                continue;
+            }
+            let model = Model {
+                client_height: if side {
+                    shown.client_height
+                } else {
+                    self.elevation(floor) + self.settings.client_height
+                },
+                ..shown
+            };
             let pick = match &pt.router {
                 Some(name) => emitters.iter().find(|e| e.name == *name).and_then(|e| {
                     model::signal_at(&walls, e, &model, pt.band, pt.at, &mut scratch)
@@ -1992,7 +2350,12 @@ impl Engine {
                 .max(model::MIN_DISTANCE_M);
             let rest = pt.rssi_dbm - eirp
                 + model::fspl_1m(pt.band)
-                + walls.path_loss(e.at, pt.at, pt.band, &mut scratch);
+                + walls.loss(
+                    [e.at[0], e.at[1], e.height],
+                    [pt.at[0], pt.at[1], model.client_height],
+                    pt.band,
+                    &mut scratch,
+                );
             out.push((
                 i,
                 pt.rssi_dbm,
@@ -2105,20 +2468,28 @@ impl Engine {
             .get("path")
             .and_then(Value::as_str)
             .ok_or_else(|| bad(command, "`path` is the project file"))?;
-        let plan = self.plan.as_ref();
+        // Format 2: floors. A build that reads only format 1 refuses it rather than keep one
+        // floor and drop the others.
+        let floors = self.all_floors();
         let project = json!({
-            "format": "radiocraft-project/1",
-            "plan": plan.map(|p| p.path.clone()),
-            "materials": plan.map(|p| p.sources.iter().map(|s| json!({"source": s.name, "kind": s.kind.name(), "material": s.material.to_json()})).collect::<Vec<_>>()),
+            "format": "radiocraft-project/2",
+            "floors": floors.iter().map(|f| json!({
+                "name": f.name,
+                "elevation": f.elevation,
+                "offset": f.offset,
+                "slab": f.slab.to_json(),
+                "cut": f.cut,
+                "plan": f.plan.as_ref().map(|p| p.path.clone()),
+                "materials": f.plan.as_ref().map(|p| p.sources.iter().map(|s| json!({"source": s.name, "kind": s.kind.name(), "material": s.material.to_json()})).collect::<Vec<_>>()),
+            })).collect::<Vec<_>>(),
+            "active": self.active,
             "routers": self.routers.iter().map(|r| {
                 let power = match &r.power { Power::Device(id) => json!({"device": id}), Power::Eirp(e) => json!({"eirp_dbm": band_map(e)}) };
-                json!({"name": r.name, "at": r.at, "height": r.height, "power": power, "channels": channels_json(&r.channels)})
+                json!({"name": r.name, "at": r.at, "height": r.height, "power": power, "channels": channels_json(&r.channels), "floor": r.floor})
             }).collect::<Vec<_>>(),
-            // Fields added after the first beta (view, client_streams, channels) are optional
-            // when read, so older projects open unchanged: the format name stays.
             "settings": self.settings_json(),
             "devices_file": self.devices_file,
-            "survey": self.survey.iter().map(|s| json!({"at": s.at, "band": s.band.name(), "rssi_dbm": s.rssi_dbm, "router": s.router})).collect::<Vec<_>>(),
+            "survey": self.survey.iter().map(|s| json!({"at": s.at, "band": s.band.name(), "rssi_dbm": s.rssi_dbm, "router": s.router, "floor": s.floor})).collect::<Vec<_>>(),
         });
         let text =
             serde_json::to_string_pretty(&project).map_err(|e| bad(command, e.to_string()))?;
@@ -2134,8 +2505,15 @@ impl Engine {
         let bytes = read_file(command, path)?;
         let project: Value =
             serde_json::from_slice(&bytes).map_err(|e| bad(command, format!("{path}: {e}")))?;
-        if project.get("format").and_then(Value::as_str) != Some("radiocraft-project/1") {
-            return Err(bad(command, format!("{path}: not a RadioCraft project")));
+        let format = project.get("format").and_then(Value::as_str);
+        if !matches!(
+            format,
+            Some("radiocraft-project/1" | "radiocraft-project/2")
+        ) {
+            return Err(bad(
+                command,
+                format!("{path}: not a RadioCraft project (or one from a newer RadioCraft)"),
+            ));
         }
         // A design exported already (perhaps in the background) isn't exported again.
         let mut fresh = Engine {
@@ -2148,17 +2526,38 @@ impl Engine {
         if let Some(s) = project.get("settings") {
             fresh.execute("settings.set", s)?;
         }
-        if let Some(plan) = project.get("plan").and_then(Value::as_str) {
-            fresh.execute("plan.open", &json!({"path": plan}))?;
-            for m in project
-                .get("materials")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                // A source the plan no longer has is skipped.
-                let _ = fresh.execute("material.set", m);
+        // Format 1 is one floor: its plan and materials at the top level.
+        let floors: Vec<Value> = match project.get("floors").and_then(Value::as_array) {
+            Some(f) => f.clone(),
+            None => {
+                vec![json!({"plan": project.get("plan"), "materials": project.get("materials")})]
             }
+        };
+        let cut = fresh.settings.slice_height;
+        for (i, f) in floors.iter().enumerate().take(MAX_FLOORS) {
+            let mut meta = json!({"name": f.get("name"), "elevation": f.get("elevation"), "offset": f.get("offset"), "slab": f.get("slab")});
+            if i == 0 {
+                meta["index"] = json!(0);
+                fresh.execute("floor.set", &meta)?;
+            } else {
+                fresh.execute("floor.add", &meta)?;
+            }
+            if let Some(plan) = f.get("plan").and_then(Value::as_str) {
+                let at = f.get("cut").and_then(Value::as_f64).unwrap_or(cut);
+                fresh.execute("plan.open", &json!({"path": plan, "slice_height": at}))?;
+                for m in f
+                    .get("materials")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    // A source the plan no longer has is skipped.
+                    let _ = fresh.execute("material.set", m);
+                }
+            }
+        }
+        if let Some(a) = project.get("active").and_then(Value::as_u64) {
+            let _ = fresh.execute("floor.select", &json!({"index": a}));
         }
         for r in project
             .get("routers")
@@ -2166,7 +2565,7 @@ impl Engine {
             .into_iter()
             .flatten()
         {
-            let mut params = json!({"at": r.get("at"), "height": r.get("height"), "name": r.get("name"), "channels": r.get("channels")});
+            let mut params = json!({"at": r.get("at"), "height": r.get("height"), "name": r.get("name"), "channels": r.get("channels"), "floor": r.get("floor")});
             if let Some(power) = r.get("power").and_then(Value::as_object) {
                 for (k, v) in power {
                     params[k] = v.clone();
@@ -2202,7 +2601,9 @@ struct Step {
 /// aren't kept: they're read again when a snapshot cuts the model differently.
 #[derive(Clone, Debug)]
 struct Snapshot {
-    materials: Vec<(String, SourceKind, Material)>,
+    /// Every floor with its plan (shared, not copied).
+    floors: Vec<Floor>,
+    active: usize,
     routers: Vec<Router>,
     next_router: u64,
     settings: Settings,
@@ -2219,7 +2620,8 @@ impl Snapshot {
             view: View::Signal,
             ..s.clone()
         };
-        self.materials == o.materials
+        self.floors.len() == o.floors.len()
+            && self.floors.iter().zip(&o.floors).all(|(a, b)| a.same(b))
             && self.routers == o.routers
             && self.next_router == o.next_router
             && shown(&self.settings) == shown(&o.settings)
@@ -2243,7 +2645,9 @@ fn history_kind(command: &str) -> History {
     match command {
         "material.set" | "router.add" | "router.move" | "router.set" | "router.remove"
         | "router.suggest" | "settings.set" | "devices.load" | "survey.import" | "survey.add"
-        | "survey.clear" | "survey.calibrate" => History::Edit,
+        | "survey.clear" | "survey.calibrate" | "floor.add" | "floor.set" | "floor.remove" => {
+            History::Edit
+        }
         "plan.open" | "project.open" | "project.new" => History::NewDocument,
         _ => History::None,
     }
@@ -2286,6 +2690,10 @@ fn label(command: &str, p: &Value) -> String {
         "survey.add" => "Add Measurement",
         "survey.clear" => "Clear Measurements",
         "survey.calibrate" => "Calibrate",
+        "floor.add" => "Add Floor",
+        "plan.open" => "Open Plan",
+        "floor.set" => "Change Floor",
+        "floor.remove" => "Remove Floor",
         _ => "Edit",
     }
     .to_string()

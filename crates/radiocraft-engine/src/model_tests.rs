@@ -353,3 +353,89 @@ fn one_body_of_thin_and_thick_walls_is_guessed_where_each_path_crosses() {
         20.0
     );
 }
+
+/// Floors: a slab passed adds its loss once, a wall on either floor counts where the path is on
+/// that floor, and the loss is the same both ways.
+#[test]
+fn a_building_counts_slabs_and_each_floors_walls() {
+    use std::sync::Arc;
+    let concrete = preset("concrete");
+    let slab = concrete.1.0;
+    let empty = Arc::new(WallMap::default());
+    // Upstairs a concrete wall at x 1000..1200; downstairs nothing.
+    let upstairs = Arc::new(WallMap::new(
+        vec![wall(1000.0, -5000.0, 1200.0, 5000.0, 0)],
+        vec![concrete.clone()],
+    ));
+    let storey = |elevation: f64, walls: &Arc<WallMap>| Storey {
+        elevation,
+        walls: walls.clone(),
+        slab_db: slab,
+    };
+    let b = Building::new(vec![storey(3000.0, &upstairs), storey(0.0, &empty)]);
+    let mut scratch = Scratch::default();
+    // Straight up through the slab: the slab only.
+    assert_eq!(
+        b.loss(
+            [500.0, 0.0, 1000.0],
+            [500.0, 0.0, 4000.0],
+            Band::G5,
+            &mut scratch
+        ),
+        20.0
+    );
+    // Across the wall while upstairs (the path climbs past 3 m before x reaches 1000): slab + wall.
+    let up = b.loss(
+        [0.0, 0.0, 1000.0],
+        [2000.0, 0.0, 5000.0],
+        Band::G5,
+        &mut scratch,
+    );
+    assert_eq!(up, 40.0);
+    // The same path the other way round.
+    assert_eq!(
+        b.loss(
+            [2000.0, 0.0, 5000.0],
+            [0.0, 0.0, 1000.0],
+            Band::G5,
+            &mut scratch
+        ),
+        up
+    );
+    // Across x 1000..1200 while still downstairs (the climb ends past it): the slab only.
+    assert_eq!(
+        b.loss(
+            [0.0, 0.0, 1000.0],
+            [4000.0, 0.0, 3500.0],
+            Band::G5,
+            &mut scratch
+        ),
+        20.0
+    );
+    // Two slabs: from the ground floor to the second floor.
+    let three = Building::new(vec![
+        storey(0.0, &empty),
+        storey(3000.0, &empty),
+        storey(6000.0, &empty),
+    ]);
+    assert_eq!(
+        three.loss(
+            [0.0, 0.0, 1000.0],
+            [0.0, 0.0, 7000.0],
+            Band::G5,
+            &mut scratch
+        ),
+        40.0
+    );
+    // One floor: exactly the floor's own walls, as before floors.
+    let one = Building::new(vec![storey(0.0, &upstairs)]);
+    assert_eq!(
+        one.loss(
+            [0.0, 0.0, 1000.0],
+            [2000.0, 0.0, 1000.0],
+            Band::G5,
+            &mut scratch
+        ),
+        upstairs.path_loss([0.0, 0.0], [2000.0, 0.0], Band::G5, &mut scratch)
+    );
+}

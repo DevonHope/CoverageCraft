@@ -343,6 +343,19 @@ impl WallMap {
     /// each run of one material the path enters. Where materials overlap, the one with the larger
     /// loss counts. A run the path starts in isn't entered, so it adds nothing.
     pub fn path_loss(&self, a: [f64; 2], b: [f64; 2], band: Band, scratch: &mut Scratch) -> f64 {
+        self.path_loss_from(a, b, band, scratch, false)
+    }
+
+    /// As [`WallMap::path_loss`]; `start_counts` counts a wall the path starts inside (a path
+    /// coming down from the floor above into a wall), which a router standing in a wall doesn't.
+    pub fn path_loss_from(
+        &self,
+        a: [f64; 2],
+        b: [f64; 2],
+        band: Band,
+        scratch: &mut Scratch,
+        start_counts: bool,
+    ) -> f64 {
         scratch.stamp = scratch.stamp.wrapping_add(1);
         if scratch.stamp == 0 {
             scratch.seen.iter_mut().for_each(|s| *s = 0);
@@ -393,7 +406,7 @@ impl WallMap {
         if scratch.events.is_empty() {
             return 0.0;
         }
-        runs_loss(&mut scratch.events, gap)
+        runs_loss(&mut scratch.events, gap, start_counts)
     }
 }
 
@@ -449,7 +462,7 @@ struct Span {
 /// than `gap` apart, and add each run's loss once. A run starting at the path's start adds nothing.
 /// Pieces shorter than `gap` are skipped: they're slivers where two outlines of one wall (a wall
 /// and its hatch) differ by rounding, not walls of their own.
-fn runs_loss(spans: &mut [Span], gap: f64) -> f64 {
+fn runs_loss(spans: &mut [Span], gap: f64, start_counts: bool) -> f64 {
     let mut cuts: Vec<f64> = spans.iter().flat_map(|s| [s.t0, s.t1]).collect();
     cuts.sort_by(f64::total_cmp);
     cuts.dedup();
@@ -472,7 +485,7 @@ fn runs_loss(spans: &mut [Span], gap: f64) -> f64 {
         match last {
             Some((m, end)) if m == top.material && t0 - end <= gap => {}
             _ => {
-                if t0 > 0.0 {
+                if t0 > 0.0 || start_counts {
                     total += top.loss;
                 }
             }
@@ -510,9 +523,97 @@ pub struct Model {
     pub offset_db: [f64; 3],
 }
 
+/// What a signal loses to walls (and floors) on its way between two points in the building
+/// (x, y, z in mm).
+pub trait PathLoss {
+    fn loss(&self, from: [f64; 3], to: [f64; 3], band: Band, scratch: &mut Scratch) -> f64;
+}
+
+/// One floor: its walls only, the path seen from above.
+impl PathLoss for WallMap {
+    fn loss(&self, from: [f64; 3], to: [f64; 3], band: Band, scratch: &mut Scratch) -> f64 {
+        self.path_loss([from[0], from[1]], [to[0], to[1]], band, scratch)
+    }
+}
+
+/// A floor of a building: where it starts (mm), its walls, and the slab under it (dB per band).
+#[derive(Clone, Debug)]
+pub struct Storey {
+    pub elevation: f64,
+    pub walls: std::sync::Arc<WallMap>,
+    pub slab_db: [f64; 3],
+}
+
+/// Floors stacked: a path between them is split where it passes a slab; each piece crosses the
+/// walls of the floor it is on (seen from above), and each slab passed adds its loss once. The
+/// same both ways.
+#[derive(Clone, Debug, Default)]
+pub struct Building {
+    /// By elevation, lowest first.
+    pub storeys: Vec<Storey>,
+}
+
+impl Building {
+    pub fn new(mut storeys: Vec<Storey>) -> Building {
+        storeys.sort_by(|a, b| a.elevation.total_cmp(&b.elevation));
+        Building { storeys }
+    }
+
+    /// The floor a height is on: the highest that starts at or below it (the lowest otherwise).
+    fn storey_at(&self, z: f64) -> usize {
+        self.storeys
+            .iter()
+            .rposition(|s| s.elevation <= z)
+            .unwrap_or(0)
+    }
+}
+
+impl PathLoss for Building {
+    fn loss(&self, from: [f64; 3], to: [f64; 3], band: Band, scratch: &mut Scratch) -> f64 {
+        let (za, zb) = (from[2], to[2]);
+        let (lo, hi) = (za.min(zb), za.max(zb));
+        // The slabs between: each floor's but the lowest's, where the path passes its level.
+        let mut cuts: Vec<(f64, usize)> = self
+            .storeys
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter(|(_, s)| lo < s.elevation && s.elevation <= hi && zb != za)
+            .map(|(k, s)| ((s.elevation - za) / (zb - za), k))
+            .collect();
+        cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let at = |t: f64| {
+            [
+                from[0] + (to[0] - from[0]) * t,
+                from[1] + (to[1] - from[1]) * t,
+            ]
+        };
+        let mut total: f64 = cuts
+            .iter()
+            .filter_map(|(_, k)| self.storeys.get(*k))
+            .map(|s| s.slab_db.get(band.index()).copied().unwrap_or(0.0))
+            .sum();
+        let mut ts: Vec<f64> = vec![0.0];
+        ts.extend(cuts.iter().map(|(t, _)| *t));
+        ts.push(1.0);
+        for w in ts.windows(2) {
+            let (Some(&t0), Some(&t1)) = (w.first(), w.get(1)) else {
+                continue;
+            };
+            let mid_z = za + (zb - za) * 0.5 * (t0 + t1);
+            if let Some(s) = self.storeys.get(self.storey_at(mid_z)) {
+                total += s
+                    .walls
+                    .path_loss_from(at(t0), at(t1), band, scratch, t0 > 0.0);
+            }
+        }
+        total
+    }
+}
+
 /// The signal `e` gives at `p` in `band` (dBm); `None` when it has no radio in `band`.
 pub fn signal_at(
-    walls: &WallMap,
+    walls: &dyn PathLoss,
     e: &Emitter,
     model: &Model,
     band: Band,
@@ -528,7 +629,12 @@ pub fn signal_at(
             band,
             model.exponent,
             d,
-            walls.path_loss(e.at, p, band, scratch),
+            walls.loss(
+                [e.at[0], e.at[1], e.height],
+                [p[0], p[1], model.client_height],
+                band,
+                scratch,
+            ),
         ) + model.offset_db.get(band.index()).copied().unwrap_or(0.0),
     )
 }
@@ -536,7 +642,7 @@ pub fn signal_at(
 /// The best signal any of `emitters` gives at `p` in `band`, and which emitter gives it; `None`
 /// when no emitter has a radio in `band`.
 pub fn best_at(
-    walls: &WallMap,
+    walls: &dyn PathLoss,
     emitters: &[Emitter],
     model: &Model,
     band: Band,
@@ -558,7 +664,7 @@ pub fn best_at(
 /// Every emitter's signal at the centre of each cell `keep` selects, in one pass:
 /// `out[cell * emitters.len() + e]` (dBm), NaN where it isn't worked out or has no radio.
 pub fn signals(
-    walls: &WallMap,
+    walls: &dyn PathLoss,
     emitters: &[Emitter],
     model: &Model,
     band: Band,

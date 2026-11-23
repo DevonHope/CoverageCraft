@@ -7,7 +7,7 @@
 //! on a flat.
 
 use crate::materials::Band;
-use crate::model::{Cell, Emitter, FAIR_DBM, Grid, Model, Scratch, WallMap, signal_at};
+use crate::model::{Cell, Emitter, FAIR_DBM, Grid, Model, PathLoss, Scratch, signal_at};
 
 /// The most floor points a spot is judged on.
 pub const MAX_SAMPLES: usize = 600;
@@ -56,7 +56,7 @@ pub struct Spot {
 /// Spots for `count` more routers like `template` (its position is ignored), given `existing`.
 #[allow(clippy::too_many_arguments)]
 pub fn suggest(
-    walls: &WallMap,
+    walls: &dyn PathLoss,
     grid: &Grid,
     cells: &[Cell],
     existing: &[Emitter],

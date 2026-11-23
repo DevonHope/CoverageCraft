@@ -78,6 +78,28 @@ pub fn stroke_width_mm(material: &Material) -> f64 {
 }
 
 impl FloorPlan {
+    /// Move every shape (and every view's frame) by `d` (mm): where the plan sits in the building.
+    pub fn translate(&mut self, d: [f64; 2]) {
+        if d == [0.0, 0.0] {
+            return;
+        }
+        let shift = |p: &mut [f64; 2]| {
+            p[0] += d[0];
+            p[1] += d[1];
+        };
+        for s in &mut self.shapes {
+            match &mut s.shape {
+                Shape::Area(rings) => rings.iter_mut().flatten().for_each(shift),
+                Shape::Stroke(points) => points.iter_mut().for_each(shift),
+            }
+        }
+        for v in &mut self.views {
+            if let Some(w) = v.window.as_mut() {
+                *w = [w[0] + d[0], w[1] + d[1], w[2] + d[0], w[3] + d[1]];
+            }
+        }
+    }
+
     /// The index of the source `name` of `kind`, added with a guessed material if new.
     pub fn source(&mut self, name: &str, kind: SourceKind, hints: &[&str]) -> usize {
         if let Some(i) = self

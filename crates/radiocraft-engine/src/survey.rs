@@ -21,9 +21,17 @@ pub struct Point {
     pub rssi_dbm: f64,
     /// The router it was measured from, by name; `None` for the strongest.
     pub router: Option<String>,
+    /// The floor it was measured on (by index); `None`: the one shown when it was read.
+    pub floor: Option<usize>,
 }
 
-fn point(at: [f64; 2], band: &str, rssi: f64, router: Option<String>) -> Result<Point, String> {
+fn point(
+    at: [f64; 2],
+    band: &str,
+    rssi: f64,
+    router: Option<String>,
+    floor: Option<usize>,
+) -> Result<Point, String> {
     let band = Band::parse(band).ok_or_else(|| format!("band `{band}` is 2.4, 5 or 6"))?;
     if !(at.iter().all(|v| v.is_finite() && v.abs() <= 1.0e8)) {
         return Err("a position must be finite numbers in mm".into());
@@ -36,6 +44,7 @@ fn point(at: [f64; 2], band: &str, rssi: f64, router: Option<String>) -> Result<
         band,
         rssi_dbm: rssi,
         router: router.filter(|r| !r.trim().is_empty()),
+        floor,
     })
 }
 
@@ -59,7 +68,15 @@ pub fn from_json(v: &Value) -> Result<Point, String> {
         .and_then(Value::as_f64)
         .ok_or("`rssi_dbm` is the measured signal")?;
     let router = v.get("router").and_then(Value::as_str).map(str::to_string);
-    point(at, &band, rssi, router)
+    let floor = match v.get("floor") {
+        None | Some(Value::Null) => None,
+        Some(f) => Some(
+            f.as_u64()
+                .and_then(|f| usize::try_from(f).ok())
+                .ok_or("`floor` is a floor's index")?,
+        ),
+    };
+    point(at, &band, rssi, router, floor)
 }
 
 /// The points in a CSV file (a header naming `x`, `y`, `band`, `rssi_dbm` and optionally
@@ -94,6 +111,7 @@ pub fn parse(text: &str, json: bool) -> Result<Vec<Point>, String> {
             col(&["rssi_dbm", "rssi", "dbm"]).ok_or("no `rssi_dbm` column")?,
         );
         let router = col(&["router", "ap"]);
+        let floor = col(&["floor"]);
         let mut out = Vec::new();
         for (i, line) in lines.enumerate() {
             if out.len() >= MAX_POINTS {
@@ -116,6 +134,12 @@ pub fn parse(text: &str, json: bool) -> Result<Vec<Point>, String> {
                     f.get(band).copied().unwrap_or_default(),
                     num(rssi)?,
                     router.and_then(|c| f.get(c)).map(|s| s.to_string()),
+                    match floor.and_then(|c| f.get(c)).filter(|s| !s.is_empty()) {
+                        None => None,
+                        Some(s) => Some(s.parse::<usize>().map_err(|_| {
+                            format!("line {}: the floor isn't a floor's index", i + 2)
+                        })?),
+                    },
                 )
                 .map_err(|e| format!("line {}: {e}", i + 2))?,
             );

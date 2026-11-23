@@ -8,6 +8,7 @@ pub mod devices;
 pub mod dwg;
 pub mod dxf;
 pub mod engine;
+pub mod floors;
 pub mod materials;
 pub mod mesh;
 pub mod model;
