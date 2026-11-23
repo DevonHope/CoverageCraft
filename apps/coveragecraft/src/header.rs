@@ -230,6 +230,14 @@ impl App {
             ),
             row(
                 &["Routers"],
+                CommandRef::new("routers.channels"),
+                "Suggest Channels…",
+                None,
+                has_plan && self.engine.routers().len() > 1,
+                plain,
+            ),
+            row(
+                &["Routers"],
                 CommandRef::new("routers.remove"),
                 "Remove Selected Router",
                 None,
@@ -317,6 +325,7 @@ impl App {
                 self.home = false;
             }
             "routers.suggest" => self.suggest_spot(),
+            "routers.channels" => self.suggest_channels(),
             "routers.remove" => {
                 if let Some(id) = self.selected.take() {
                     self.run("router.remove", json!({"id": id}));

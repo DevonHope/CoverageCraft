@@ -52,14 +52,15 @@ Outputs: a heatmap, the share of the floor at −60 dBm or better and at −67 d
   spot suggestions; measured points with comparison and calibration (exponent and per-band
   offset); an HTML report. Since then: several floors (plans stacked with elevations, offsets and
   slabs, signals crossing them along the straight path); calibration of wall losses (materials
-  fitted per band where enough points are measured through them, shown before it is applied).
+  fitted per band where enough points are measured through them, shown before it is applied);
+  channel suggestions (each router's channel picked to keep same-channel routers apart on every
+  floor, widths kept, shown before it is applied).
 
 ## After the beta
 
-1. **Channel suggestions.** Pick channels that keep same-channel routers apart.
-2. **Antenna patterns.** A device file can carry a pattern; ceiling and wall mounts differ.
-3. **Openings in slabs.** Stairwells and shafts as regions of a floor with no slab.
-4. **Site survey** (needs a decision from the Craft maintainers): measure networks around you
+1. **Antenna patterns.** A device file can carry a pattern; ceiling and wall mounts differ.
+2. **Openings in slabs.** Stairwells and shafts as regions of a floor with no slab.
+3. **Site survey** (needs a decision from the Craft maintainers): measure networks around you
    on the computer running CoverageCraft, click by click or while walking. It needs OS network
    access, which the other Craft apps don't use.
 

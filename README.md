@@ -51,6 +51,14 @@ see [What the numbers mean](#what-the-numbers-mean).
   rate, and the routers sharing the channel there.
 - **Suggest a spot.** Place a router where it raises the floor at −67 dBm or better the most,
   given the routers already there; repeat for more.
+- **Suggest channels.** Pick a channel for each router in the shown band so that as much of the
+  floor as possible hears no other router on an overlapping channel (the Same-channel map's
+  rule), on every floor. Each router keeps its width; channels marked keep stay. Shown router by
+  router, with the share of the floor before and after, before anything changes; Apply is one
+  undo step. The channels it picks from: 1, 6 and 11 on 2.4 GHz; 36–48 and 149–165 on 5 GHz, with
+  the DFS channels 52–144 when you allow them; the preferred scanning channels on 6 GHz. Which
+  channels are allowed differs by country: `channel.suggest` takes your own list
+  (`channels: [...]`).
 - **Measurements.** Read measured points (CSV or JSON), see how far the prediction is from them,
   and calibrate: fit the path-loss exponent, a per-band offset and the losses of the walls enough
   points are measured through to them. Calibrate… shows the fit before it is used: each wall's
@@ -194,7 +202,7 @@ Known limits:
 Beta. Working: DXF, DWG, SolidCraft and OBJ/STL plans, viewpoints, several floors, materials,
 routers, devices, channels, the three bands, six maps and their figures, the probe, spot
 suggestions, measured points and calibration (wall losses included), undo and redo, HTML reports,
-projects, PNG export, the CLI and scripts. Not yet: channel suggestions, antenna patterns,
+channel suggestions, projects, PNG export, the CLI and scripts. Not yet: antenna patterns,
 openings in slabs, live scanning of networks, translations beyond English (strings go through
 `i18n::tr` already).
 See [docs/plan.md](docs/plan.md).

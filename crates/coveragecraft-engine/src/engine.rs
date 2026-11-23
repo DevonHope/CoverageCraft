@@ -1691,6 +1691,7 @@ impl Engine {
         if let Some(fewest) = options.iter().map(Vec::len).min()
             && fewest < free.len()
         {
+            out["shortage"] = json!({"routers": free.len(), "channels": fewest});
             notes.push(format!(
                 "{} routers and as few as {fewest} channels to share: routers that hear each other may have to share one{}",
                 free.len(),
@@ -1698,6 +1699,7 @@ impl Engine {
             ));
         }
         if !stuck.is_empty() {
+            out["no_channel"] = json!(stuck);
             notes.push(format!(
                 "no allowed channel at its width for {}",
                 stuck.join(", ")

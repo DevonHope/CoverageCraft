@@ -15,6 +15,8 @@ use crate::theme::{TOKENS, wall_colour};
 
 #[path = "calibration.rs"]
 mod calibration;
+#[path = "channels_ui.rs"]
+mod channels_ui;
 #[path = "header.rs"]
 mod header;
 
@@ -75,6 +77,10 @@ pub struct App {
     /// A calibration worked out but not applied: the engine's revision it was made at, and the
     /// fit.
     calibration: Option<(u64, Value)>,
+    /// Channels suggested but not applied: the engine's revision then, and the suggestion.
+    channel_plan: Option<(u64, Value)>,
+    /// Whether channel suggestions may use 5 GHz DFS channels.
+    channel_dfs: bool,
 }
 
 /// A file waiting for SolidCraft to export its design.
@@ -142,6 +148,8 @@ impl App {
             pending: None,
             floor_name: None,
             calibration: None,
+            channel_plan: None,
+            channel_dfs: false,
         };
         if let Some(path) = path {
             app.open(&path);
@@ -182,17 +190,20 @@ impl App {
                         .unwrap_or_default()
                         .to_string();
                     let params = step.get("params").cloned().unwrap_or(json!({}));
-                    let preview = command == "survey.calibrate"
-                        && !params
-                            .get("apply")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false);
+                    let not_applied = !params
+                        .get("apply")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let preview = command == "survey.calibrate" && not_applied;
+                    let channels = command == "channel.suggest" && not_applied;
                     let Some(r) = self.run(&command, params) else {
                         break;
                     };
-                    // A calibration not applied is shown, as Calibrate… shows it.
+                    // A calibration or channels not applied are shown, as their buttons show them.
                     if preview {
                         self.calibration = Some((self.engine.revision(), r));
+                    } else if channels {
+                        self.channel_plan = Some((self.engine.revision(), r));
                     }
                 }
                 self.slice = self.engine.settings().slice_height;
@@ -595,13 +606,25 @@ impl App {
         if adding.clicked() {
             self.adding = !self.adding;
         }
-        if ui
-            .button(tr("Suggest a spot"))
-            .on_hover_text(tr("Add a router where it raises the floor at −67 dBm or better the most, like the selected one"))
-            .clicked()
-        {
-            self.suggest_spot();
-        }
+        ui.horizontal(|ui| {
+            if ui
+                .button(tr("Suggest a spot"))
+                .on_hover_text(tr("Add a router where it raises the floor at −67 dBm or better the most, like the selected one"))
+                .clicked()
+            {
+                self.suggest_spot();
+            }
+            if ui
+                .add_enabled(self.engine.routers().len() > 1, egui::Button::new(tr("Suggest channels…")))
+                .on_hover_text(tr(
+                    "Channels for the shown band that keep routers on the same channel apart, shown before they are set",
+                ))
+                .clicked()
+            {
+                self.suggest_channels();
+            }
+        });
+        self.channels_section(ui);
         let devices: Vec<(String, String)> = self
             .engine
             .devices()
