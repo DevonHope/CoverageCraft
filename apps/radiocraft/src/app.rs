@@ -358,6 +358,10 @@ impl App {
             "file.export_report"
         } else if pressed(Modifiers::COMMAND, Key::Num0) {
             "view.fit"
+        } else if pressed(shift_cmd, Key::Z) {
+            "edit.redo"
+        } else if pressed(Modifiers::COMMAND, Key::Z) {
+            "edit.undo"
         } else {
             return;
         };
@@ -909,6 +913,8 @@ impl App {
             && let Some(pos) = response.interact_pointer_pos()
         {
             self.dragging = pick(&self.view, pos, &routers);
+            // A new drag is a step of its own, even of the router moved just before.
+            let _ = self.engine.execute("edit.checkpoint", &json!({}));
             if self.dragging.is_some() {
                 self.selected = self.dragging;
             }

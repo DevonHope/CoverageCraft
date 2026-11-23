@@ -159,8 +159,14 @@ pub struct Engine {
     settings: Settings,
     devices: Vec<Device>,
     devices_file: Option<String>,
-    /// Measured points.
-    survey: Vec<Point>,
+    /// Measured points (shared with the undo history, which keeps them without copying).
+    survey: Arc<Vec<Point>>,
+    /// Edits to undo and redo, oldest first.
+    undo: Vec<Step>,
+    redo: Vec<Step>,
+    /// The last edit's grouping key: edits with the same key in a row (a drag's moves) are one
+    /// step.
+    last_key: Option<String>,
     /// The last SolidCraft design exported: its path, modification time, size and export.
     sc_cache: Option<(
         String,
@@ -184,7 +190,10 @@ impl Default for Engine {
             settings: Settings::default(),
             devices: devices::generic(),
             devices_file: None,
-            survey: Vec::new(),
+            survey: Arc::new(Vec::new()),
+            undo: Vec::new(),
+            redo: Vec::new(),
+            last_key: None,
             sc_cache: None,
             walls: None,
             field: None,
@@ -206,6 +215,22 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "{values?: bool, leakage?: bool} → the shown band's figures: coverage, second-router (roaming) cover, link rate, channel overlap; leakage: the area outside the walls with signal (values: every cell's signal)",
     ),
     ("devices.list", "{} → the devices a router can name"),
+    (
+        "edit.checkpoint",
+        "{} → end the current group of edits: the next move or change of the same thing is a step of its own",
+    ),
+    (
+        "edit.history",
+        "{} → {undo: [labels], redo: [labels]}, oldest first",
+    ),
+    (
+        "edit.redo",
+        "{} → redo the last undone edit → {redone: label}",
+    ),
+    (
+        "edit.undo",
+        "{} → undo the last edit (materials, routers, settings, measurements, devices; not band or map) → {undone: label}",
+    ),
     (
         "devices.load",
         "{path} → load a device file (a JSON list of {id, name?, eirp_dbm}); null path unloads it",
@@ -459,8 +484,37 @@ impl Engine {
         }
     }
 
-    /// Run `command` with `params`.
+    /// Run `command` with `params`. An edit is recorded for `edit.undo`; opening or starting a
+    /// plan starts a new history.
     pub fn execute(&mut self, command: &str, params: &Value) -> Result<Value> {
+        match command {
+            "edit.undo" => return self.undo_redo(command, true),
+            "edit.redo" => return self.undo_redo(command, false),
+            "edit.history" => return Ok(self.history_json()),
+            "edit.checkpoint" => {
+                self.last_key = None;
+                return Ok(json!({}));
+            }
+            _ => {}
+        }
+        let kind = history_kind(command);
+        let before = (kind == History::Edit).then(|| self.snapshot());
+        let result = self.execute_inner(command, params);
+        if result.is_ok() {
+            match (kind, before) {
+                (History::Edit, Some(before)) => self.record(command, params, before),
+                (History::NewDocument, _) => {
+                    self.undo.clear();
+                    self.redo.clear();
+                    self.last_key = None;
+                }
+                _ => {}
+            }
+        }
+        result
+    }
+
+    fn execute_inner(&mut self, command: &str, params: &Value) -> Result<Value> {
         let p = if params.is_null() {
             &Value::Object(Default::default())
         } else {
@@ -508,12 +562,12 @@ impl Engine {
                 if self.survey.len() >= survey::MAX_POINTS {
                     return Err(bad(command, format!("at most {} points", survey::MAX_POINTS)));
                 }
-                self.survey.push(point);
+                Arc::make_mut(&mut self.survey).push(point);
                 self.revision = self.revision.wrapping_add(1);
                 Ok(json!({"points": self.survey.len()}))
             }
             "survey.clear" => {
-                self.survey.clear();
+                self.survey = Arc::new(Vec::new());
                 self.revision = self.revision.wrapping_add(1);
                 Ok(json!({"points": 0}))
             }
@@ -521,6 +575,143 @@ impl Engine {
             "survey.calibrate" => self.survey_calibrate(command, p),
             other => Err(EngineError::Unknown(other.to_string())),
         }
+    }
+
+    /// What an edit can change, to put back.
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            materials: self
+                .plan
+                .as_ref()
+                .map(|p| {
+                    p.sources
+                        .iter()
+                        .map(|s| (s.name.clone(), s.kind, s.material.clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            routers: self.routers.clone(),
+            next_router: self.next_router,
+            settings: self.settings.clone(),
+            survey: self.survey.clone(),
+            devices: self.devices.clone(),
+            devices_file: self.devices_file.clone(),
+        }
+    }
+
+    /// Record `command`'s edit, if it changed anything.
+    fn record(&mut self, command: &str, params: &Value, before: Snapshot) {
+        let after = self.snapshot();
+        if before.same_edit(&after) {
+            return;
+        }
+        let key = group_key(command, params);
+        self.redo.clear();
+        if key.is_some() && key == self.last_key {
+            // The same drag or the same field still being changed: one step.
+            return;
+        }
+        self.undo.push(Step {
+            label: label(command, params),
+            before,
+        });
+        if self.undo.len() > MAX_UNDO {
+            self.undo.remove(0);
+        }
+        self.last_key = key;
+    }
+
+    fn undo_redo(&mut self, command: &str, undo: bool) -> Result<Value> {
+        let from = if undo { &mut self.undo } else { &mut self.redo };
+        let step = from.pop().ok_or_else(|| {
+            bad(
+                command,
+                if undo {
+                    "nothing to undo"
+                } else {
+                    "nothing to redo"
+                },
+            )
+        })?;
+        let now = self.snapshot();
+        if let Err(e) = self.restore(command, &step.before) {
+            if undo {
+                self.undo.push(step)
+            } else {
+                self.redo.push(step)
+            }
+            return Err(e);
+        }
+        let label = step.label.clone();
+        let back = Step {
+            label: step.label,
+            before: now,
+        };
+        if undo {
+            self.redo.push(back)
+        } else {
+            self.undo.push(back)
+        }
+        self.last_key = None;
+        Ok(json!({if undo { "undone" } else { "redone" }: label}))
+    }
+
+    /// Put a snapshot back: cut the model again if it was seen otherwise, then the rest. The
+    /// band and map shown stay as they are.
+    fn restore(&mut self, command: &str, snap: &Snapshot) -> Result<()> {
+        let s = &snap.settings;
+        let recut = self.plan_is_model()
+            && (s.slice_height != self.settings.slice_height
+                || s.up != self.settings.up
+                || s.viewpoint != self.settings.viewpoint);
+        let settings = Settings {
+            band: self.settings.band,
+            view: self.settings.view,
+            ..s.clone()
+        };
+        let old = std::mem::replace(&mut self.settings, settings);
+        if recut
+            && let Some(path) = self.plan.as_ref().map(|p| p.path.clone())
+            && let Err(e) = self.plan_open(command, &json!({"path": path}))
+        {
+            self.settings = old;
+            self.changed(true);
+            return Err(e);
+        }
+        if let Some(plan) = self.plan.as_mut() {
+            for src in &mut plan.sources {
+                if let Some((_, _, m)) = snap
+                    .materials
+                    .iter()
+                    .find(|(n, k, _)| *n == src.name && *k == src.kind)
+                {
+                    src.material = m.clone();
+                }
+            }
+        }
+        self.routers = snap.routers.clone();
+        self.next_router = snap.next_router;
+        self.survey = snap.survey.clone();
+        self.devices = snap.devices.clone();
+        self.devices_file = snap.devices_file.clone();
+        self.changed(true);
+        Ok(())
+    }
+
+    fn history_json(&self) -> Value {
+        json!({
+            "undo": self.undo.iter().map(|s| s.label.clone()).collect::<Vec<_>>(),
+            "redo": self.redo.iter().map(|s| s.label.clone()).collect::<Vec<_>>(),
+        })
+    }
+
+    /// The label of the edit `edit.undo` would undo, and of the one `edit.redo` would redo.
+    pub fn undo_label(&self) -> Option<&str> {
+        self.undo.last().map(|s| s.label.as_str())
+    }
+
+    pub fn redo_label(&self) -> Option<&str> {
+        self.redo.last().map(|s| s.label.as_str())
     }
 
     fn plan_open(&mut self, command: &str, p: &Value) -> Result<Value> {
@@ -1745,7 +1936,7 @@ impl Engine {
         let text = String::from_utf8(bytes)
             .map_err(|_| bad(command, format!("{path}: not UTF-8 text")))?;
         self.survey =
-            survey::parse(&text, json).map_err(|e| bad(command, format!("{path}: {e}")))?;
+            Arc::new(survey::parse(&text, json).map_err(|e| bad(command, format!("{path}: {e}")))?);
         self.revision = self.revision.wrapping_add(1);
         Ok(json!({"points": self.survey.len()}))
     }
@@ -1977,4 +2168,107 @@ impl Engine {
         self.revision = self.revision.wrapping_add(1);
         Ok(json!({"path": path, "routers": self.routers.len()}))
     }
+}
+
+/// The most edits kept to undo.
+const MAX_UNDO: usize = 200;
+
+/// What `edit.undo` puts back: the state before an edit, and what the edit was.
+#[derive(Clone, Debug)]
+struct Step {
+    label: String,
+    before: Snapshot,
+}
+
+/// What edits change: materials, routers, settings, measurements and devices. The plan's shapes
+/// aren't kept: they're read again when a snapshot cuts the model differently.
+#[derive(Clone, Debug)]
+struct Snapshot {
+    materials: Vec<(String, SourceKind, Material)>,
+    routers: Vec<Router>,
+    next_router: u64,
+    settings: Settings,
+    survey: Arc<Vec<Point>>,
+    devices: Vec<Device>,
+    devices_file: Option<String>,
+}
+
+impl Snapshot {
+    /// Whether two snapshots differ only in the band and map shown (not edits).
+    fn same_edit(&self, o: &Snapshot) -> bool {
+        let shown = |s: &Settings| Settings {
+            band: Band::G5,
+            view: View::Signal,
+            ..s.clone()
+        };
+        self.materials == o.materials
+            && self.routers == o.routers
+            && self.next_router == o.next_router
+            && shown(&self.settings) == shown(&o.settings)
+            && (Arc::ptr_eq(&self.survey, &o.survey) || self.survey == o.survey)
+            && self.devices == o.devices
+            && self.devices_file == o.devices_file
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum History {
+    /// Changes what is planned: recorded.
+    Edit,
+    /// Opens or starts a plan: a new history.
+    NewDocument,
+    /// Reads, computes or writes files: not recorded.
+    None,
+}
+
+fn history_kind(command: &str) -> History {
+    match command {
+        "material.set" | "router.add" | "router.move" | "router.set" | "router.remove"
+        | "router.suggest" | "settings.set" | "devices.load" | "survey.import" | "survey.add"
+        | "survey.clear" | "survey.calibrate" => History::Edit,
+        "plan.open" | "project.open" | "project.new" => History::NewDocument,
+        _ => History::None,
+    }
+}
+
+/// Edits that make one step while they repeat: a router's moves (a drag), a router's height or
+/// name being dragged or typed, the cut being dragged. Picks (a device, a viewpoint) are each a
+/// step.
+fn group_key(command: &str, p: &Value) -> Option<String> {
+    let mut keys: Vec<&str> = p
+        .as_object()
+        .map(|m| m.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    keys.sort_unstable();
+    let id = p.get("id").unwrap_or(&Value::Null);
+    match (command, keys.as_slice()) {
+        ("router.move", _) => Some(format!("move:{id}")),
+        ("router.set", ["height", "id"] | ["id", "name"]) => {
+            Some(format!("set:{id}:{}", keys.join(",")))
+        }
+        ("settings.set", ["slice_height"]) => Some("cut".into()),
+        _ => None,
+    }
+}
+
+/// What an edit is called in the Edit menu ("Undo Move Router").
+fn label(command: &str, p: &Value) -> String {
+    match command {
+        "material.set" => "Change Material",
+        "router.add" => "Add Router",
+        "router.move" => "Move Router",
+        "router.set" => "Change Router",
+        "router.remove" => "Remove Router",
+        "router.suggest" => "Suggest a Spot",
+        "settings.set" if p.get("viewpoint").is_some() => "Change Viewpoint",
+        "settings.set" if p.get("slice_height").is_some() => "Change Cut",
+        "settings.set" => "Change Settings",
+        "devices.load" => "Load Devices",
+        "survey.import" => "Import Measurements",
+        "survey.add" => "Add Measurement",
+        "survey.clear" => "Clear Measurements",
+        "survey.calibrate" => "Calibrate",
+        _ => "Edit",
+    }
+    .to_string()
 }

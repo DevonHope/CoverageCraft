@@ -52,6 +52,10 @@ see [What the numbers mean](#what-the-numbers-mean).
   settings; print it to PDF from a browser.
 - **Projects.** Save the materials, routers, channels, measurements and settings as a `.rcraft`
   file beside the plan. Export the shown map as a PNG.
+- **Undo and redo.** Every edit (materials, routers, channels, settings, measurements, devices)
+  can be undone and redone: Edit menu, ⌘Z and ⇧⌘Z, or the bar's buttons, named for what they do.
+  A drag is one step; switching the band or map shown isn't an edit; opening a plan starts a new
+  history. Scripts and the CLI use `edit.undo`, `edit.redo` and `edit.history`.
 - **Everything is a command.** The window, the CLI and scripts all run the same commands.
 
 ## Build and run
@@ -156,7 +160,7 @@ Known limits:
   `RADIOCRAFT_SOLIDCRAFT_CLI` can point at another build's `solidcraft-cli`.
 - Saved SolidCraft views are read when they are Z-up; a DXF's named views are used when they
   look straight down in model space (twist ignored; paper-space views and layouts aren't offered).
-- The header uses the system title bar on Windows and Linux for now; there is no undo yet.
+- The header uses the system title bar on Windows and Linux for now.
 
 Beta. Working: DXF and OBJ/STL plans, materials, routers, devices, channels, the three bands,
 six maps and their figures, the probe, spot suggestions, measured points and calibration, HTML

@@ -768,6 +768,164 @@ fn a_dwg_plan_opens() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Edits undo and redo, a drag is one step, the band and map shown aren't edits, and opening a
+/// plan starts a new history.
+#[test]
+fn undo_and_redo() {
+    let mut e = Engine::new();
+    run(
+        &mut e,
+        "plan.open",
+        json!({"path": fixture("cadcraft-apartment.dxf")}),
+    );
+    assert!(
+        e.execute("edit.undo", &json!({})).is_err(),
+        "nothing to undo after opening"
+    );
+    let plain = run(&mut e, "coverage.compute", json!({}));
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [1000, 1000], "height": 2400}),
+    );
+    // A drag: many moves, one step.
+    for x in [1500, 2000, 2500, 3000] {
+        run(&mut e, "router.move", json!({"id": 1, "at": [x, 1000]}));
+    }
+    run(
+        &mut e,
+        "material.set",
+        json!({"source": "A-WALL", "material": "concrete"}),
+    );
+    // Showing another band or map isn't an edit.
+    run(
+        &mut e,
+        "settings.set",
+        json!({"band": "2.4", "view": "rate"}),
+    );
+    let h = run(&mut e, "edit.history", json!({}));
+    assert_eq!(
+        h["undo"],
+        json!(["Add Router", "Move Router", "Change Material"]),
+        "{h}"
+    );
+    let moved_concrete = run(&mut e, "coverage.compute", json!({}));
+    assert_eq!(
+        run(&mut e, "edit.undo", json!({}))["undone"],
+        "Change Material"
+    );
+    assert_eq!(
+        run(&mut e, "plan.info", json!({}))["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "A-WALL")
+            .unwrap()["material"],
+        "auto"
+    );
+    // The band and map shown stay as they are.
+    assert_eq!(e.settings().band.name(), "2.4");
+    run(&mut e, "edit.undo", json!({}));
+    assert_eq!(
+        run(&mut e, "router.list", json!({}))[0]["at"],
+        json!([1000.0, 1000.0])
+    );
+    run(&mut e, "edit.undo", json!({}));
+    assert_eq!(run(&mut e, "router.list", json!({})), json!([]));
+    run(
+        &mut e,
+        "settings.set",
+        json!({"band": "5", "view": "signal"}),
+    );
+    assert_eq!(
+        run(&mut e, "coverage.compute", json!({}))["routers"],
+        plain["routers"]
+    );
+    // Redo all three: back where we were.
+    for _ in 0..3 {
+        run(&mut e, "edit.redo", json!({}));
+    }
+    run(
+        &mut e,
+        "settings.set",
+        json!({"band": "2.4", "view": "rate"}),
+    );
+    assert_eq!(run(&mut e, "coverage.compute", json!({})), moved_concrete);
+    assert!(e.execute("edit.redo", &json!({})).is_err());
+    // A new edit drops what could be redone.
+    run(&mut e, "edit.undo", json!({}));
+    run(&mut e, "router.add", json!({"at": [5000, 5000]}));
+    assert_eq!(run(&mut e, "edit.history", json!({}))["redo"], json!([]));
+    // An edit.checkpoint between two drags keeps them apart.
+    run(&mut e, "router.move", json!({"id": 1, "at": [1, 1]}));
+    run(&mut e, "edit.checkpoint", json!({}));
+    run(&mut e, "router.move", json!({"id": 1, "at": [2, 2]}));
+    let n = run(&mut e, "edit.history", json!({}))["undo"]
+        .as_array()
+        .unwrap()
+        .len();
+    run(&mut e, "edit.undo", json!({}));
+    assert_eq!(
+        run(&mut e, "router.list", json!({}))[0]["at"],
+        json!([1.0, 1.0])
+    );
+    assert_eq!(
+        run(&mut e, "edit.history", json!({}))["undo"]
+            .as_array()
+            .unwrap()
+            .len(),
+        n - 1
+    );
+    // Opening a plan starts again.
+    run(
+        &mut e,
+        "plan.open",
+        json!({"path": fixture("cadcraft-apartment.dxf")}),
+    );
+    assert_eq!(
+        run(&mut e, "edit.history", json!({})),
+        json!({"undo": [], "redo": []})
+    );
+}
+
+/// Undoing a change of viewpoint cuts the model the old way again, routers back in place.
+#[test]
+fn undoing_a_viewpoint_cuts_the_model_again() {
+    let dir = std::env::temp_dir().join(format!("radiocraft-undo-view-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("room.obj");
+    std::fs::write(&path, solidcraft_obj()).unwrap();
+    let mut e = Engine::new();
+    run(
+        &mut e,
+        "plan.open",
+        json!({"path": path.to_string_lossy(), "slice_height": 1000}),
+    );
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [1000, 1500], "height": 1200}),
+    );
+    let top = run(&mut e, "plan.info", json!({}));
+    run(
+        &mut e,
+        "settings.set",
+        json!({"viewpoint": "front", "slice_height": -1500}),
+    );
+    assert_eq!(
+        run(&mut e, "edit.undo", json!({}))["undone"],
+        "Change Viewpoint"
+    );
+    assert_eq!(run(&mut e, "plan.info", json!({})), top);
+    assert_eq!(
+        run(&mut e, "router.list", json!({}))[0]["at"],
+        json!([1000.0, 1500.0])
+    );
+    run(&mut e, "edit.redo", json!({}));
+    assert_eq!(run(&mut e, "plan.info", json!({}))["viewpoint"], "front");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A project saved before channels and maps existed opens, with them unset.
 #[test]
 fn an_older_project_opens() {

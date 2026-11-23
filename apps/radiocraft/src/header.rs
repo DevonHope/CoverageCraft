@@ -120,6 +120,26 @@ impl App {
                 plain,
             ),
         ];
+        let undo = self.engine.undo_label().map(|l| format!("Undo {l}"));
+        let redo = self.engine.redo_label().map(|l| format!("Redo {l}"));
+        rows.extend([
+            row(
+                &["Edit"],
+                CommandRef::new("edit.undo"),
+                undo.as_deref().unwrap_or("Undo"),
+                Some("Cmd+Z"),
+                undo.is_some(),
+                plain,
+            ),
+            row(
+                &["Edit"],
+                CommandRef::new("edit.redo"),
+                redo.as_deref().unwrap_or("Redo"),
+                Some("Cmd+Shift+Z"),
+                redo.is_some(),
+                plain,
+            ),
+        ]);
         for b in Band::ALL {
             rows.push(row(
                 &["View", "Band"],
@@ -206,8 +226,9 @@ impl App {
                 plain,
             ),
         ]);
-        let mut bar = craft_menu::from_items(&["File", "View", "Routers", "Help"], &rows);
+        let mut bar = craft_menu::from_items(&["File", "Edit", "View", "Routers", "Help"], &rows);
         bar.tag_menu("File", craft_menu::MenuRole::File);
+        bar.tag_menu("Edit", craft_menu::MenuRole::Edit);
         bar.tag_menu("View", craft_menu::MenuRole::View);
         bar.tag_menu("Help", craft_menu::MenuRole::Help);
         bar.tag_item(&CommandRef::new("help.about"), craft_menu::ItemRole::About);
@@ -226,7 +247,13 @@ impl App {
             &s.viewpoint,
         )
             .hash(&mut h);
-        (self.adding, self.selected).hash(&mut h);
+        (
+            self.adding,
+            self.selected,
+            self.engine.undo_label(),
+            self.engine.redo_label(),
+        )
+            .hash(&mut h);
         h.finish()
     }
 
@@ -268,6 +295,23 @@ impl App {
                 }
             }
             "help.about" => self.about = true,
+            "edit.undo" | "edit.redo" => {
+                if let Some(r) = self.run(&c.id, json!({})) {
+                    let what = r["undone"]
+                        .as_str()
+                        .map(|l| format!("{} {l}", tr("Undid")))
+                        .or_else(|| r["redone"].as_str().map(|l| format!("{} {l}", tr("Redid"))));
+                    self.status = what.map(|t| (t, false));
+                    // A router that's gone isn't selected; the cut may have changed.
+                    if self
+                        .selected
+                        .is_some_and(|id| !self.engine.routers().iter().any(|r| r.id == id))
+                    {
+                        self.selected = None;
+                    }
+                    self.slice = self.engine.settings().slice_height;
+                }
+            }
             _ => {}
         }
         ctx.request_repaint();
@@ -308,6 +352,27 @@ impl App {
                 .clicked()
             {
                 self.home = !self.home || self.engine.plan().is_none();
+            }
+            // Undo and redo, named for what they'd do.
+            let undo = self.engine.undo_label().map(str::to_string);
+            let redo = self.engine.redo_label().map(str::to_string);
+            if ui
+                .add_enabled(undo.is_some(), egui::Button::new(tr("Undo")).small())
+                .on_hover_text(
+                    undo.map_or_else(|| tr("Nothing to undo"), |l| format!("{} {l}", tr("Undo"))),
+                )
+                .clicked()
+            {
+                commands.push(CommandRef::new("edit.undo"));
+            }
+            if ui
+                .add_enabled(redo.is_some(), egui::Button::new(tr("Redo")).small())
+                .on_hover_text(
+                    redo.map_or_else(|| tr("Nothing to redo"), |l| format!("{} {l}", tr("Redo"))),
+                )
+                .clicked()
+            {
+                commands.push(CommandRef::new("edit.redo"));
             }
             ui.separator();
             // Off macOS (or when the system menu bar refused), the menus live here.
