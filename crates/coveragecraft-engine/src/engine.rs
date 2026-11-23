@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
+use crate::channels;
 use crate::devices::{self, Device, EIRP_CAP_DBM};
 use crate::dxf::read_dxf;
 use crate::floors::{Floor, MAX_FLOORS, slab_db};
@@ -15,7 +16,7 @@ use crate::mesh::{Up, read_mesh};
 use crate::model::{self, Cell, Emitter, Grid, Model, Scratch, WallMap};
 use crate::model::{Building, Storey};
 use crate::plan::{FloorPlan, SourceKind};
-use crate::radio::{Channel, HEARD_DBM, View, default_width, link_rate};
+use crate::radio::{self, Channel, HEARD_DBM, View, default_width, link_rate};
 use crate::survey::{self, Point};
 use crate::viewpoint::{Basis, PlanView};
 use crate::views::{self, Derived, LegendRow};
@@ -225,6 +226,10 @@ impl Default for Engine {
 
 /// The commands, with a line on what each takes.
 pub const COMMANDS: &[(&str, &str)] = &[
+    (
+        "channel.suggest",
+        "{band?, dfs?: bool, channels?: [20 MHz channel numbers], keep?: [router ids], apply?: bool} → a channel for each router in the band (the shown one by default), each router's width kept, so that as much floor as possible hears no router on an overlapping channel; every floor in the top view. Allowed by default: 1, 6, 11; 5 GHz 36–48 and 149–165 (dfs adds 52–144); 6 GHz preferred scanning channels. The share before and after; apply: set them",
+    ),
     ("commands.list", "{} → the commands"),
     (
         "coverage.at",
@@ -476,6 +481,53 @@ fn loss_db_param(command: &str, v: &Value, out: &mut LossOverrides) -> Result<()
     Ok(())
 }
 
+/// A floor's grid and what each of its cells is, from its walls: the plan's extent (or the part a
+/// drawing's named view frames, `window`) with a margin; floor where the walls enclose it (or
+/// everywhere off the walls when they enclose nothing).
+fn floor_grid(
+    s: &Settings,
+    walls: &WallMap,
+    window: Option<[f64; 4]>,
+) -> Option<(Grid, Vec<Cell>, &'static str)> {
+    // A drawing's named view frames part of it: the map covers that part (the walls outside it
+    // still count on the way).
+    let bounds = match window {
+        Some(w) => w,
+        None => walls.bounds()?,
+    };
+    let margin = 0.5 * s.close_gaps + 2.0 * s.grid_step;
+    let grid = Grid::covering(
+        [
+            bounds[0] - margin,
+            bounds[1] - margin,
+            bounds[2] + margin,
+            bounds[3] + margin,
+        ],
+        s.grid_step,
+    )?;
+    let solid = model::wall_cells(walls, &grid);
+    let enclosed = model::enclosed(walls, &grid, &solid, s.close_gaps);
+    let floor = if enclosed.iter().any(|x| *x) {
+        "enclosed"
+    } else {
+        "open"
+    };
+    let cells: Vec<Cell> = solid
+        .iter()
+        .zip(&enclosed)
+        .map(|(w, e)| {
+            if *w {
+                Cell::Wall
+            } else if *e || floor == "open" {
+                Cell::Floor
+            } else {
+                Cell::Outside
+            }
+        })
+        .collect();
+    Some((grid, cells, floor))
+}
+
 fn channels_param(
     command: &str,
     v: &Value,
@@ -635,6 +687,7 @@ impl Engine {
             "router.set" => self.router_set(command, p),
             "router.remove" => self.router_remove(command, p),
             "router.suggest" => self.router_suggest(command, p),
+            "channel.suggest" => self.channel_suggest(command, p),
             "router.list" => Ok(json!(self.routers.iter().map(|r| self.router_json(r)).collect::<Vec<_>>())),
             "settings.set" => self.settings_set(command, p),
             "coverage.compute" => self.coverage_compute(command, p),
@@ -1461,6 +1514,211 @@ impl Engine {
         Ok(json!({"id": p.get("id"), "at": at}))
     }
 
+    /// Who serves and who is heard on each floor cell in `band`, per floor scored: every floor in
+    /// the top view; from a side, the shown one (the others' routers don't send then).
+    fn channel_tables(&mut self, band: Band) -> Option<Vec<(usize, channels::Table)>> {
+        let building = self.building()?;
+        let emitters = self.emitters();
+        let side = self.side_view();
+        let shown = self.model();
+        let s = self.settings.clone();
+        let floors: Vec<usize> = if side || self.floors.len() < 2 {
+            vec![self.active]
+        } else {
+            (0..self.floors.len()).collect()
+        };
+        let mut out = Vec::new();
+        for i in floors {
+            let (walls, window) = if i == self.active {
+                (self.walls()?, self.plan_view().and_then(|v| v.window))
+            } else {
+                (self.floor_walls(i), None)
+            };
+            // A floor without a plan has no cells to score.
+            let Some((grid, cells, _)) = floor_grid(&s, &walls, window) else {
+                continue;
+            };
+            if grid.len().saturating_mul(emitters.len().max(1)) > MAX_SIGNALS {
+                return None;
+            }
+            let model = Model {
+                client_height: if side {
+                    shown.client_height
+                } else {
+                    self.elevation(i) + s.client_height
+                },
+                ..shown
+            };
+            let floor = |c: usize| cells.get(c) == Some(&Cell::Floor);
+            let signals = model::signals(&building, &emitters, &model, band, &grid, &floor);
+            out.push((i, channels::table(&signals, emitters.len(), &floor)));
+        }
+        Some(out)
+    }
+
+    fn channel_suggest(&mut self, command: &str, p: &Value) -> Result<Value> {
+        if self.plan.is_none() {
+            return Err(bad(command, "no plan is open (plan.open)"));
+        }
+        let band = match p.get("band").filter(|v| !v.is_null()) {
+            Some(b) => {
+                let name = b
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| b.as_f64().map(|x| x.to_string()))
+                    .unwrap_or_default();
+                Band::parse(&name).ok_or_else(|| bad(command, "`band` is 2.4, 5 or 6"))?
+            }
+            None => self.settings.band,
+        };
+        let dfs = match p.get("dfs").filter(|v| !v.is_null()) {
+            Some(v) => v
+                .as_bool()
+                .ok_or_else(|| bad(command, "`dfs` is true or false"))?,
+            None => false,
+        };
+        let allowed: Vec<u16> = match p.get("channels").filter(|v| !v.is_null()) {
+            Some(v) => {
+                let all = radio::numbers(band);
+                let shape = || {
+                    bad(
+                        command,
+                        format!(
+                            "`channels` is a list of {} GHz 20 MHz channel numbers",
+                            band.name()
+                        ),
+                    )
+                };
+                v.as_array()
+                    .ok_or_else(shape)?
+                    .iter()
+                    .map(|x| {
+                        x.as_u64()
+                            .and_then(|n| u16::try_from(n).ok())
+                            .filter(|n| all.contains(n))
+                            .ok_or_else(shape)
+                    })
+                    .collect::<Result<_>>()?
+            }
+            None => channels::allowed(band, dfs),
+        };
+        if allowed.is_empty() {
+            return Err(bad(command, "`channels` is empty"));
+        }
+        let keep: Vec<u64> = match p.get("keep").filter(|v| !v.is_null()) {
+            Some(v) => v
+                .as_array()
+                .ok_or_else(|| bad(command, "`keep` is a list of router ids"))?
+                .iter()
+                .map(|x| {
+                    x.as_u64()
+                        .filter(|id| self.routers.iter().any(|r| r.id == *id))
+                        .ok_or_else(|| bad(command, format!("no router {x} (router.list)")))
+                })
+                .collect::<Result<_>>()?,
+            None => Vec::new(),
+        };
+        let current: Vec<Option<Channel>> = self
+            .routers
+            .iter()
+            .map(|r| r.channels.get(band.index()).copied().flatten())
+            .collect();
+        // The routers that send in this band, not kept: each picks among the channels of its
+        // own width.
+        let emitters = self.emitters();
+        let (mut free, mut options, mut stuck) = (Vec::new(), Vec::new(), Vec::new());
+        for (i, (r, e)) in self.routers.iter().zip(&emitters).enumerate() {
+            if e.eirp(band).is_none() || keep.contains(&r.id) {
+                continue;
+            }
+            let width = current
+                .get(i)
+                .copied()
+                .flatten()
+                .map_or(default_width(band), |c| c.width);
+            let opts = channels::candidates(band, width, &allowed);
+            if opts.is_empty() {
+                stuck.push(format!("{} ({width} MHz)", r.name));
+                continue;
+            }
+            free.push(i);
+            options.push(opts);
+        }
+        if !emitters.iter().any(|e| e.eirp(band).is_some()) {
+            return Err(bad(
+                command,
+                format!("no router has a radio in the {} GHz band", band.name()),
+            ));
+        }
+        let tables = self.channel_tables(band).ok_or_else(|| {
+            bad(
+                command,
+                "nothing to analyse: the plan has no floor, or the grid is too fine (raise grid_step)",
+            )
+        })?;
+        let all: Vec<channels::Table> = tables.iter().map(|(_, t)| t.clone()).collect();
+        let suggested = channels::suggest(&all, band, &current, &free, &options);
+        let round = |v: f64| (v * 10.0).round() / 10.0;
+        let pct = |a: &[Option<Channel>], ts: &[channels::Table]| {
+            let cells: usize = ts.iter().map(|t| t.cells).sum();
+            round(channels::score(ts, a, band).0 as f64 / cells.max(1) as f64 * 100.0)
+        };
+        let routers: Vec<Value> = self
+            .routers
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| free.contains(i))
+            .map(|(i, r)| {
+                let from = current.get(i).copied().flatten();
+                let to = suggested.get(i).copied().flatten();
+                json!({"id": r.id, "name": r.name, "from": from.map(Channel::to_json), "to": to.map(Channel::to_json), "changed": from != to})
+            })
+            .collect();
+        let mut out = json!({
+            "band": band.name(),
+            "candidates": allowed,
+            "floors": tables.iter().map(|(f, t)| json!({
+                "floor": f,
+                "before_pct_no_channel_overlap": pct(&current, std::slice::from_ref(t)),
+                "after_pct_no_channel_overlap": pct(&suggested, std::slice::from_ref(t)),
+            })).collect::<Vec<_>>(),
+            "before_pct_no_channel_overlap": pct(&current, &all),
+            "after_pct_no_channel_overlap": pct(&suggested, &all),
+            "routers": routers,
+            "kept": keep,
+        });
+        let mut notes: Vec<String> = Vec::new();
+        if let Some(fewest) = options.iter().map(Vec::len).min()
+            && fewest < free.len()
+        {
+            notes.push(format!(
+                "{} routers and as few as {fewest} channels to share: routers that hear each other may have to share one{}",
+                free.len(),
+                if band == Band::G5 && !dfs { " (dfs: true allows more, or use narrower channels)" } else { " (narrower channels allow more)" }
+            ));
+        }
+        if !stuck.is_empty() {
+            notes.push(format!(
+                "no allowed channel at its width for {}",
+                stuck.join(", ")
+            ));
+        }
+        if !notes.is_empty() {
+            out["note"] = json!(notes.join("; "));
+        }
+        let apply = p.get("apply").and_then(Value::as_bool).unwrap_or(false);
+        if apply {
+            for (r, c) in self.routers.iter_mut().zip(&suggested) {
+                if let Some(slot) = r.channels.get_mut(band.index()) {
+                    *slot = *c;
+                }
+            }
+            self.changed(false);
+        }
+        out["applied"] = json!(apply);
+        Ok(out)
+    }
+
     fn router_set(&mut self, command: &str, p: &Value) -> Result<Value> {
         let i = self.router(command, p)?;
         let height = ranged(command, p, "height", -MAX_COORD, MAX_COORD)?;
@@ -1751,43 +2009,10 @@ impl Engine {
             return Some(f.clone());
         }
         let walls = self.walls()?;
-        // A drawing's named view frames part of it: the map covers that part (the walls outside
-        // it still count on the way).
-        let bounds = match self.plan_view().and_then(|v| v.window) {
-            Some(w) => w,
-            None => walls.bounds()?,
-        };
         let s = self.settings.clone();
+        let window = self.plan_view().and_then(|v| v.window);
+        let (grid, cells, floor) = floor_grid(&s, &walls, window)?;
         let margin = 0.5 * s.close_gaps + 2.0 * s.grid_step;
-        let grid = Grid::covering(
-            [
-                bounds[0] - margin,
-                bounds[1] - margin,
-                bounds[2] + margin,
-                bounds[3] + margin,
-            ],
-            s.grid_step,
-        )?;
-        let solid = model::wall_cells(&walls, &grid);
-        let enclosed = model::enclosed(&walls, &grid, &solid, s.close_gaps);
-        let floor = if enclosed.iter().any(|x| *x) {
-            "enclosed"
-        } else {
-            "open"
-        };
-        let cells: Vec<Cell> = solid
-            .iter()
-            .zip(&enclosed)
-            .map(|(w, e)| {
-                if *w {
-                    Cell::Wall
-                } else if *e || floor == "open" {
-                    Cell::Floor
-                } else {
-                    Cell::Outside
-                }
-            })
-            .collect();
         // The leakage map pads the same grid with whole cells, all outside the floor, so the
         // floor's cells, and its figures, are the same in every map.
         let (grid, cells) = if outside {
@@ -2880,10 +3105,9 @@ enum History {
 fn history_kind(command: &str) -> History {
     match command {
         "material.set" | "router.add" | "router.move" | "router.set" | "router.remove"
-        | "router.suggest" | "settings.set" | "devices.load" | "survey.import" | "survey.add"
-        | "survey.clear" | "survey.calibrate" | "floor.add" | "floor.set" | "floor.remove" => {
-            History::Edit
-        }
+        | "router.suggest" | "channel.suggest" | "settings.set" | "devices.load"
+        | "survey.import" | "survey.add" | "survey.clear" | "survey.calibrate" | "floor.add"
+        | "floor.set" | "floor.remove" => History::Edit,
         "plan.open" | "project.open" | "project.new" => History::NewDocument,
         _ => History::None,
     }
@@ -2925,6 +3149,7 @@ fn label(command: &str, p: &Value) -> String {
         "router.set" => "Change Router",
         "router.remove" => "Remove Router",
         "router.suggest" => "Suggest a Spot",
+        "channel.suggest" => "Suggest Channels",
         "settings.set" if p.get("viewpoint").is_some() => "Change Viewpoint",
         "settings.set" if p.get("slice_height").is_some() => "Change Cut",
         "settings.set" => "Change Settings",

@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod channels;
 pub mod devices;
 pub mod dwg;
 pub mod dxf;

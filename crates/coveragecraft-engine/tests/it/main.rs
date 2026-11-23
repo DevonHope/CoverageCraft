@@ -1586,3 +1586,143 @@ fn calibration_finds_wall_losses() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Channel suggestions: routers all on one 5 GHz channel are spread out; once applied, the
+/// Overlap figure is what the suggestion said; looking isn't an edit and applying is one step;
+/// widths and kept routers stay; the same input gives the same answer; bad input is refused.
+#[test]
+fn channels_are_suggested() {
+    let mut e = Engine::new();
+    assert!(e.execute("channel.suggest", &json!({})).is_err());
+    run(
+        &mut e,
+        "plan.open",
+        json!({"path": fixture("cadcraft-apartment.dxf")}),
+    );
+    run(
+        &mut e,
+        "material.set",
+        json!({"source": "A-WALL", "material": "drywall"}),
+    );
+    for (name, at, width) in [
+        ("Hall", [2500, 2500], 80),
+        ("Den", [9000, 6000], 80),
+        ("Kitchen", [9500, 1500], 40),
+        ("Study", [3000, 6500], 80),
+    ] {
+        run(
+            &mut e,
+            "router.add",
+            json!({"at": at, "height": 2400, "eirp_dbm": 20, "name": name,
+                   "channels": {"5": {"channel": 36, "width": width}}}),
+        );
+    }
+    let figure = |e: &mut Engine| {
+        run(e, "coverage.compute", json!({}))["pct_no_channel_overlap"]
+            .as_f64()
+            .unwrap()
+    };
+    let before = figure(&mut e);
+    let history = run(&mut e, "edit.history", json!({}));
+    let s = run(&mut e, "channel.suggest", json!({"dfs": true}));
+    assert_eq!(
+        s["before_pct_no_channel_overlap"].as_f64().unwrap(),
+        before,
+        "{s}"
+    );
+    let after = s["after_pct_no_channel_overlap"].as_f64().unwrap();
+    assert!(after > before + 20.0, "{s}");
+    assert_eq!(run(&mut e, "edit.history", json!({})), history);
+    assert_eq!(run(&mut e, "channel.suggest", json!({"dfs": true})), s);
+    // Applied: the figure is what was predicted, in one undoable step; widths kept.
+    let applied = run(
+        &mut e,
+        "channel.suggest",
+        json!({"dfs": true, "apply": true}),
+    );
+    assert_eq!(
+        applied["after_pct_no_channel_overlap"],
+        s["after_pct_no_channel_overlap"]
+    );
+    assert_eq!(figure(&mut e), after);
+    let list = run(&mut e, "router.list", json!({}));
+    let widths: Vec<u64> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["channels"]["5"]["width"].as_u64().unwrap())
+        .collect();
+    assert_eq!(widths, vec![80, 80, 40, 80], "{list}");
+    run(&mut e, "edit.undo", json!({}));
+    assert_eq!(figure(&mut e), before);
+    // Without DFS, 80 MHz has two channels for three 80 MHz routers: said so.
+    let s = run(&mut e, "channel.suggest", json!({}));
+    assert!(s["note"].as_str().unwrap_or("").contains("dfs"), "{s}");
+    // A kept router keeps its channel.
+    let s = run(&mut e, "channel.suggest", json!({"dfs": true, "keep": [1]}));
+    assert!(
+        s["routers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["id"] != 1),
+        "{s}"
+    );
+    // Refused.
+    for bad in [
+        json!({"band": "7"}),
+        json!({"channels": [999]}),
+        json!({"channels": []}),
+        json!({"keep": [99]}),
+        json!({"dfs": "yes"}),
+    ] {
+        assert!(e.execute("channel.suggest", &bad).is_err(), "{bad}");
+    }
+}
+
+/// Two routers stacked a floor apart hear each other through the slab: they get different
+/// channels, and the floor above counts too.
+#[test]
+fn channels_are_suggested_across_floors() {
+    let dir = std::env::temp_dir().join(format!("coveragecraft-chfloors-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let plan = dir.join("room.dxf");
+    std::fs::write(&plan, room_dxf(0.0)).unwrap();
+    let mut e = Engine::new();
+    run(&mut e, "plan.open", json!({"path": plan.to_string_lossy()}));
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [3000, 3000], "height": 2000, "eirp_dbm": 20, "name": "Down", "channels": {"2.4": 1}}),
+    );
+    run(&mut e, "floor.add", json!({"name": "Up"}));
+    run(&mut e, "plan.open", json!({"path": plan.to_string_lossy()}));
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [3000, 3000], "height": 2000, "eirp_dbm": 20, "name": "Up", "channels": {"2.4": 1}}),
+    );
+    let s = run(
+        &mut e,
+        "channel.suggest",
+        json!({"band": "2.4", "apply": true}),
+    );
+    assert_eq!(s["floors"].as_array().unwrap().len(), 2, "{s}");
+    assert!(
+        s["before_pct_no_channel_overlap"].as_f64().unwrap() < 50.0,
+        "{s}"
+    );
+    assert_eq!(s["after_pct_no_channel_overlap"], 100.0, "{s}");
+    let r = run(&mut e, "router.list", json!({}));
+    assert_ne!(r[0]["channels"]["2.4"], r[1]["channels"]["2.4"], "{r}");
+    // Each floor's own figure agrees.
+    run(&mut e, "settings.set", json!({"band": "2.4"}));
+    for f in [0, 1] {
+        run(&mut e, "floor.select", json!({"index": f}));
+        assert_eq!(
+            run(&mut e, "coverage.compute", json!({}))["pct_no_channel_overlap"],
+            100.0
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

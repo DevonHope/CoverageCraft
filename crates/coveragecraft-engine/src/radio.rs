@@ -78,7 +78,27 @@ fn block(band: Band, number: u16, width: u16) -> Option<(u16, u16)> {
     }
 }
 
+/// Every 20 MHz channel number `band` has.
+pub fn numbers(band: Band) -> Vec<u16> {
+    match band {
+        Band::G2_4 => (1..=13).collect(),
+        Band::G5 => CH5.to_vec(),
+        Band::G6 => (1..=233).step_by(4).collect(),
+    }
+}
+
 impl Channel {
+    /// The 20 MHz channels it covers.
+    pub fn covers(self, band: Band) -> Vec<u16> {
+        match block(band, self.number, self.width) {
+            Some((lo, hi)) => numbers(band)
+                .into_iter()
+                .filter(|n| (lo..=hi).contains(n))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// The channel, when `band` has it.
     pub fn new(band: Band, number: u16, width: u16) -> Option<Channel> {
         block(band, number, width).map(|_| Channel { number, width })
