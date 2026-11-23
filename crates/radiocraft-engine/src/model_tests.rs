@@ -439,3 +439,58 @@ fn a_building_counts_slabs_and_each_floors_walls() {
         upstairs.path_loss([0.0, 0.0], [2000.0, 0.0], Band::G5, &mut scratch)
     );
 }
+
+/// What the fit sees is what the loss is: the walls a path counts plus its slabs add up to its
+/// loss, on overlapping walls, a hatch on its wall, and across floors, both ways.
+#[test]
+fn crossings_add_up_to_the_loss() {
+    use std::sync::Arc;
+    let mats = vec![preset("concrete"), preset("drywall"), preset("low-e-glass")];
+    let walls = Arc::new(WallMap::new(
+        vec![
+            wall(1000.0, -3000.0, 1200.0, 3000.0, 0),
+            wall(999.6, -3000.0, 1200.3, 3000.0, 1),
+            wall(2500.0, -3000.0, 2510.0, 3000.0, 2),
+            wall(4000.0, -1000.0, 4300.0, 1000.0, 1),
+            wall(4100.0, -500.0, 4200.0, 500.0, 0),
+        ],
+        mats.clone(),
+    ));
+    let other = Arc::new(WallMap::new(
+        vec![wall(3000.0, -3000.0, 3200.0, 3000.0, 0)],
+        mats,
+    ));
+    let b = Building::new(vec![
+        Storey {
+            elevation: 0.0,
+            walls: walls.clone(),
+            slab_db: [10.0, 15.0, 18.0],
+        },
+        Storey {
+            elevation: 3000.0,
+            walls: other,
+            slab_db: [10.0, 15.0, 18.0],
+        },
+    ]);
+    let mut scratch = Scratch::default();
+    for band in Band::ALL {
+        for (from, to) in [
+            ([0.0, 0.0, 1000.0], [5000.0, 200.0, 1000.0]),
+            ([0.0, -2000.0, 1000.0], [5000.0, 2000.0, 1000.0]),
+            ([0.0, 0.0, 1000.0], [5000.0, 0.0, 4500.0]),
+            ([5000.0, 0.0, 4500.0], [0.0, 0.0, 1000.0]),
+            ([4150.0, 0.0, 1000.0], [6000.0, 0.0, 1000.0]),
+        ] {
+            for p in [&b as &dyn PathLoss, &*walls as &dyn PathLoss] {
+                let mut out = Vec::new();
+                let fixed = p.crossings(from, to, band, &mut scratch, &mut out);
+                let sum: f64 = fixed + out.iter().map(|(_, l)| l).sum::<f64>();
+                let loss = p.loss(from, to, band, &mut scratch);
+                assert!(
+                    (sum - loss).abs() < 1e-9,
+                    "{from:?} → {to:?} {band:?}: {sum} vs {loss} ({out:?})"
+                );
+            }
+        }
+    }
+}

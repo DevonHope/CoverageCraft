@@ -356,6 +356,32 @@ impl WallMap {
         scratch: &mut Scratch,
         start_counts: bool,
     ) -> f64 {
+        self.runs(a, b, band, scratch, start_counts, None)
+    }
+
+    /// As [`WallMap::path_loss_from`], also listing the material of each wall counted (an index
+    /// into [`WallMap::materials`]), once per run, by the very rules that give the loss.
+    pub fn path_crossings(
+        &self,
+        a: [f64; 2],
+        b: [f64; 2],
+        band: Band,
+        scratch: &mut Scratch,
+        start_counts: bool,
+        out: &mut Vec<usize>,
+    ) -> f64 {
+        self.runs(a, b, band, scratch, start_counts, Some(out))
+    }
+
+    fn runs(
+        &self,
+        a: [f64; 2],
+        b: [f64; 2],
+        band: Band,
+        scratch: &mut Scratch,
+        start_counts: bool,
+        out: Option<&mut Vec<usize>>,
+    ) -> f64 {
         scratch.stamp = scratch.stamp.wrapping_add(1);
         if scratch.stamp == 0 {
             scratch.seen.iter_mut().for_each(|s| *s = 0);
@@ -406,7 +432,7 @@ impl WallMap {
         if scratch.events.is_empty() {
             return 0.0;
         }
-        runs_loss(&mut scratch.events, gap, start_counts)
+        runs_loss(&mut scratch.events, gap, start_counts, out)
     }
 }
 
@@ -462,7 +488,12 @@ struct Span {
 /// than `gap` apart, and add each run's loss once. A run starting at the path's start adds nothing.
 /// Pieces shorter than `gap` are skipped: they're slivers where two outlines of one wall (a wall
 /// and its hatch) differ by rounding, not walls of their own.
-fn runs_loss(spans: &mut [Span], gap: f64, start_counts: bool) -> f64 {
+fn runs_loss(
+    spans: &mut [Span],
+    gap: f64,
+    start_counts: bool,
+    mut out: Option<&mut Vec<usize>>,
+) -> f64 {
     let mut cuts: Vec<f64> = spans.iter().flat_map(|s| [s.t0, s.t1]).collect();
     cuts.sort_by(f64::total_cmp);
     cuts.dedup();
@@ -487,6 +518,9 @@ fn runs_loss(spans: &mut [Span], gap: f64, start_counts: bool) -> f64 {
             _ => {
                 if t0 > 0.0 || start_counts {
                     total += top.loss;
+                    if let Some(out) = out.as_deref_mut() {
+                        out.push(top.material);
+                    }
                 }
             }
         }
@@ -527,12 +561,62 @@ pub struct Model {
 /// (x, y, z in mm).
 pub trait PathLoss {
     fn loss(&self, from: [f64; 3], to: [f64; 3], band: Band, scratch: &mut Scratch) -> f64;
+
+    /// What [`PathLoss::loss`] adds up: each wall counted (its material's name and loss) goes to
+    /// `out`; the rest (slabs) is returned. Their sum is the loss.
+    fn crossings(
+        &self,
+        from: [f64; 3],
+        to: [f64; 3],
+        band: Band,
+        scratch: &mut Scratch,
+        out: &mut Vec<(String, f64)>,
+    ) -> f64;
+}
+
+/// The walls counted on one floor's piece of a path, as (material name, loss) into `out`.
+fn crossed_on(
+    walls: &WallMap,
+    a: [f64; 2],
+    b: [f64; 2],
+    band: Band,
+    scratch: &mut Scratch,
+    start_counts: bool,
+    out: &mut Vec<(String, f64)>,
+) {
+    let mut idx = Vec::new();
+    walls.path_crossings(a, b, band, scratch, start_counts, &mut idx);
+    for i in idx {
+        if let Some((name, loss)) = walls.materials.get(i) {
+            out.push((name.clone(), loss.at(band)));
+        }
+    }
 }
 
 /// One floor: its walls only, the path seen from above.
 impl PathLoss for WallMap {
     fn loss(&self, from: [f64; 3], to: [f64; 3], band: Band, scratch: &mut Scratch) -> f64 {
         self.path_loss([from[0], from[1]], [to[0], to[1]], band, scratch)
+    }
+
+    fn crossings(
+        &self,
+        from: [f64; 3],
+        to: [f64; 3],
+        band: Band,
+        scratch: &mut Scratch,
+        out: &mut Vec<(String, f64)>,
+    ) -> f64 {
+        crossed_on(
+            self,
+            [from[0], from[1]],
+            [to[0], to[1]],
+            band,
+            scratch,
+            false,
+            out,
+        );
+        0.0
     }
 }
 
@@ -568,8 +652,13 @@ impl Building {
     }
 }
 
-impl PathLoss for Building {
-    fn loss(&self, from: [f64; 3], to: [f64; 3], band: Band, scratch: &mut Scratch) -> f64 {
+/// One floor's piece of a path: its walls, its ends, whether a wall at its start counts.
+type Piece<'a> = dyn FnMut(&WallMap, [f64; 2], [f64; 2], bool) + 'a;
+
+impl Building {
+    /// Walk the path: the slabs it passes (their loss, returned) and each floor's piece, handed
+    /// to `piece` with its ends and whether a wall at its start counts.
+    fn walk(&self, from: [f64; 3], to: [f64; 3], band: Band, piece: &mut Piece<'_>) -> f64 {
         let (za, zb) = (from[2], to[2]);
         let (lo, hi) = (za.min(zb), za.max(zb));
         // The slabs between: each floor's but the lowest's, where the path passes its level.
@@ -588,7 +677,7 @@ impl PathLoss for Building {
                 from[1] + (to[1] - from[1]) * t,
             ]
         };
-        let mut total: f64 = cuts
+        let slabs: f64 = cuts
             .iter()
             .filter_map(|(_, k)| self.storeys.get(*k))
             .map(|s| s.slab_db.get(band.index()).copied().unwrap_or(0.0))
@@ -602,12 +691,33 @@ impl PathLoss for Building {
             };
             let mid_z = za + (zb - za) * 0.5 * (t0 + t1);
             if let Some(s) = self.storeys.get(self.storey_at(mid_z)) {
-                total += s
-                    .walls
-                    .path_loss_from(at(t0), at(t1), band, scratch, t0 > 0.0);
+                piece(&s.walls, at(t0), at(t1), t0 > 0.0);
             }
         }
-        total
+        slabs
+    }
+}
+
+impl PathLoss for Building {
+    fn loss(&self, from: [f64; 3], to: [f64; 3], band: Band, scratch: &mut Scratch) -> f64 {
+        let mut walls = 0.0;
+        let slabs = self.walk(from, to, band, &mut |w, a, b, start| {
+            walls += w.path_loss_from(a, b, band, scratch, start);
+        });
+        slabs + walls
+    }
+
+    fn crossings(
+        &self,
+        from: [f64; 3],
+        to: [f64; 3],
+        band: Band,
+        scratch: &mut Scratch,
+        out: &mut Vec<(String, f64)>,
+    ) -> f64 {
+        self.walk(from, to, band, &mut |w, a, b, start| {
+            crossed_on(w, a, b, band, scratch, start, out);
+        })
     }
 }
 
