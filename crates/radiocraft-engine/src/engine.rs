@@ -223,6 +223,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "{at: [x, y], height?, name?, device? | eirp_dbm?: dBm | {\"2.4\",\"5\",\"6\"}, channels?: {\"2.4\": 6, \"5\": {channel: 36, width: 80}, ...}} → {id}",
     ),
     ("router.list", "{} → the routers"),
+    (
+        "router.suggest",
+        "{count?: 1-8, device? | eirp_dbm?, height?, channels?, add?: bool} → spots for more routers in the shown band, each raising the floor at −67 dBm or better the most; add: place them",
+    ),
     ("router.move", "{id, at: [x, y]}"),
     ("router.remove", "{id}"),
     (
@@ -429,6 +433,7 @@ impl Engine {
             "router.move" => self.router_move(command, p),
             "router.set" => self.router_set(command, p),
             "router.remove" => self.router_remove(command, p),
+            "router.suggest" => self.router_suggest(command, p),
             "router.list" => Ok(json!(self.routers.iter().map(|r| self.router_json(r)).collect::<Vec<_>>())),
             "settings.set" => self.settings_set(command, p),
             "coverage.compute" => self.coverage_compute(command, p),
@@ -623,6 +628,87 @@ impl Engine {
         });
         self.changed(false);
         Ok(json!({"id": id}))
+    }
+
+    fn router_suggest(&mut self, command: &str, p: &Value) -> Result<Value> {
+        let count = ranged(command, p, "count", 1.0, 8.0)?.unwrap_or(1.0);
+        if count.fract() != 0.0 {
+            return Err(bad(command, "`count` is 1 to 8"));
+        }
+        if self.routers.len() + count as usize > MAX_ROUTERS {
+            return Err(bad(command, format!("at most {MAX_ROUTERS} routers")));
+        }
+        let height = ranged(command, p, "height", -MAX_COORD, MAX_COORD)?
+            .or_else(|| self.routers.last().map(|r| r.height))
+            .unwrap_or(2400.0);
+        let power = self.power(command, p)?.unwrap_or_else(|| {
+            Power::Device(
+                self.devices
+                    .first()
+                    .map(|d| d.id.clone())
+                    .unwrap_or_default(),
+            )
+        });
+        let channels = match p.get("channels") {
+            None | Some(Value::Null) => [None; 3],
+            Some(v) => channels_param(command, v, [None; 3])?,
+        };
+        let add = p.get("add").and_then(Value::as_bool).unwrap_or(false);
+        let probe = Router {
+            id: 0,
+            name: String::new(),
+            at: [0.0, 0.0],
+            height,
+            power: power.clone(),
+            channels,
+        };
+        let band = self.settings.band;
+        let template = Emitter {
+            name: "suggested".into(),
+            at: [0.0, 0.0],
+            height,
+            eirp_dbm: self.eirp(&probe),
+        };
+        if template.eirp(band).is_none() {
+            return Err(bad(
+                command,
+                format!("that device has no {} GHz radio", band.name()),
+            ));
+        }
+        let f = self.field(false).ok_or_else(|| {
+            bad(
+                command,
+                "nothing to analyse: open a plan with walls (plan.open)",
+            )
+        })?;
+        let spots = crate::placement::suggest(
+            &f.walls,
+            &f.grid,
+            &f.cells,
+            &self.emitters(),
+            &template,
+            &self.model(),
+            band,
+            count as usize,
+        );
+        if spots.is_empty() {
+            return Err(bad(command, "the plan has no floor to place a router on"));
+        }
+        let mut out = Vec::new();
+        for (i, s) in spots.iter().enumerate() {
+            let at = [s.at[0].round(), s.at[1].round()];
+            let mut row = json!({"at": at, "pct_at_least_67": s.pct_at_least_67});
+            if add {
+                let mut params = json!({"at": at, "height": height, "name": format!("Suggested {}", i + 1), "channels": channels_json(&channels)});
+                match &power {
+                    Power::Device(id) => params["device"] = json!(id),
+                    Power::Eirp(e) => params["eirp_dbm"] = band_map(e),
+                }
+                row["id"] = self.router_add(command, &params)?["id"].clone();
+            }
+            out.push(row);
+        }
+        Ok(json!({"band": band.name(), "spots": out}))
     }
 
     fn router_move(&mut self, command: &str, p: &Value) -> Result<Value> {

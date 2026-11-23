@@ -11,6 +11,7 @@ pub mod materials;
 pub mod mesh;
 pub mod model;
 pub mod picture;
+pub mod placement;
 pub mod plan;
 pub mod radio;
 pub mod report;

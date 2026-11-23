@@ -349,6 +349,63 @@ fn the_report_is_one_html_page() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A suggested spot beats a corner, is the same every time, and a second router helps more.
+#[test]
+fn suggested_spots_beat_a_corner() {
+    let mut e = Engine::new();
+    run(
+        &mut e,
+        "plan.open",
+        json!({"path": fixture("cadcraft-apartment.dxf")}),
+    );
+    run(
+        &mut e,
+        "material.set",
+        json!({"source": "A-WALL", "material": "concrete"}),
+    );
+    let one = run(
+        &mut e,
+        "router.suggest",
+        json!({"device": "generic-router", "height": 900}),
+    );
+    assert_eq!(
+        one,
+        run(
+            &mut e,
+            "router.suggest",
+            json!({"device": "generic-router", "height": 900})
+        )
+    );
+    let at = one["spots"][0]["at"].clone();
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [300, 300], "height": 900, "device": "generic-router"}),
+    );
+    let corner = run(&mut e, "coverage.compute", json!({}))["pct_at_least_67"]
+        .as_f64()
+        .unwrap();
+    run(&mut e, "router.move", json!({"id": 1, "at": at}));
+    let suggested = run(&mut e, "coverage.compute", json!({}))["pct_at_least_67"]
+        .as_f64()
+        .unwrap();
+    assert!(suggested > corner, "{corner} → {suggested} at {at}");
+    // With add, the next one is placed, and it helps.
+    let two = run(
+        &mut e,
+        "router.suggest",
+        json!({"device": "generic-router", "height": 900, "add": true}),
+    );
+    assert!(two["spots"][0]["id"].is_number(), "{two}");
+    let both = run(&mut e, "coverage.compute", json!({}))["pct_at_least_67"]
+        .as_f64()
+        .unwrap();
+    assert!(both >= suggested, "{suggested} → {both}");
+    assert_eq!(e.routers().len(), 2);
+    assert!(e.execute("router.suggest", &json!({"count": 9})).is_err());
+    assert!(e.execute("router.suggest", &json!({"count": 1.5})).is_err());
+}
+
 /// A project saved before channels and maps existed opens, with them unset.
 #[test]
 fn an_older_project_opens() {

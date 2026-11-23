@@ -372,6 +372,39 @@ impl App {
         if adding.clicked() {
             self.adding = !self.adding;
         }
+        if ui
+            .button(tr("Suggest a spot"))
+            .on_hover_text(tr("Add a router where it raises the floor at −67 dBm or better the most, like the selected one"))
+            .clicked()
+        {
+            // A router like the selected one (or the last), on the shown band.
+            let like = self
+                .engine
+                .routers()
+                .iter()
+                .find(|r| Some(r.id) == self.selected)
+                .or_else(|| self.engine.routers().last())
+                .cloned();
+            let mut params = json!({"add": true});
+            if let Some(r) = like {
+                params["height"] = json!(r.height);
+                match &r.power {
+                    Power::Device(id) => params["device"] = json!(id),
+                    Power::Eirp(_) => {
+                        params["eirp_dbm"] = json!(self.engine.eirp(&r).iter().zip(Band::ALL).filter_map(|(v, b)| v.map(|v| (b.name().to_string(), json!(v)))).collect::<serde_json::Map<_, _>>())
+                    }
+                }
+            }
+            if let Some(v) = self.run("router.suggest", params)
+                && let Some(spot) = v["spots"].get(0)
+            {
+                self.selected = spot["id"].as_u64();
+                self.status = Some((
+                    format!("{} {}% {}", tr("Suggested spot added:"), spot["pct_at_least_67"], tr("of the floor at −67 dBm or better")),
+                    false,
+                ));
+            }
+        }
         let devices: Vec<(String, String)> = self
             .engine
             .devices()
