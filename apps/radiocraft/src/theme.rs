@@ -11,6 +11,8 @@ pub struct Tokens {
     pub router_fill: Color32,
     pub selection: Color32,
     pub error: Color32,
+    /// The pointer probe's background.
+    pub tooltip: Color32,
     /// Heatmap opacity over the canvas (0–255).
     pub heatmap_alpha: u8,
     pub router_radius: f32,
@@ -24,6 +26,7 @@ pub const TOKENS: Tokens = Tokens {
     router_fill: Color32::from_rgb(240, 244, 248),
     selection: Color32::from_rgb(255, 196, 64),
     error: Color32::from_rgb(255, 110, 100),
+    tooltip: Color32::from_rgba_premultiplied(16, 18, 22, 230),
     heatmap_alpha: 220,
     router_radius: 8.0,
 };

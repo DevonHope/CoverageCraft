@@ -227,6 +227,99 @@ fn projects_save_and_open_again() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Two routers on the same 5 GHz channel, one on another: the maps, the probe and the figures
+/// agree, switching maps changes no figure, and the leakage map leaves the floor's figures alone.
+#[test]
+fn channels_maps_and_leakage() {
+    let mut e = Engine::new();
+    run(
+        &mut e,
+        "plan.open",
+        json!({"path": fixture("cadcraft-apartment.dxf")}),
+    );
+    run(
+        &mut e,
+        "material.set",
+        json!({"source": "A-WALL", "material": "concrete"}),
+    );
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [2000, 2000], "height": 2400, "device": "generic-ceiling-ap", "name": "West", "channels": {"5": {"channel": 36, "width": 80}}}),
+    );
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [10000, 6000], "height": 2400, "device": "generic-ceiling-ap", "name": "East", "channels": {"5": {"channel": 44, "width": 20}}}),
+    );
+    let base = run(&mut e, "coverage.compute", json!({}));
+    // 36/80 covers 44: everywhere one is heard over the other, they share airtime.
+    assert!(
+        base["pct_no_channel_overlap"].as_f64().unwrap() < 100.0,
+        "{base}"
+    );
+    assert!(base["pct_second_at_least_67"].as_f64().is_some(), "{base}");
+    assert!(base["median_rate_mbps"].as_f64().unwrap() > 0.0, "{base}");
+    // Between the two, the probe names the other router as on an overlapping channel.
+    let probe = run(&mut e, "coverage.at", json!({"at": [6000, 4000]}));
+    let five = &probe["bands"]["5"];
+    assert_eq!(five["routers"].as_array().map(Vec::len), Some(2), "{probe}");
+    assert_eq!(five["channel_overlap"], 1, "{probe}");
+    assert!(five["rate_mbps"].as_f64().unwrap() > 0.0, "{probe}");
+    // Moving East to channel 149 clears the overlap.
+    run(
+        &mut e,
+        "router.set",
+        json!({"id": 2, "channels": {"5": 149}}),
+    );
+    let apart = run(&mut e, "coverage.compute", json!({}));
+    assert_eq!(apart["pct_no_channel_overlap"], 100.0, "{apart}");
+    // Every map is drawn from the same signals: the figures don't move.
+    for view in ["second", "serving", "overlap", "rate", "signal"] {
+        run(&mut e, "settings.set", json!({"view": view}));
+        let again = run(&mut e, "coverage.compute", json!({}));
+        assert_eq!(again["pct_at_least_67"], apart["pct_at_least_67"], "{view}");
+        assert_eq!(again["floor_m2"], apart["floor_m2"], "{view}");
+    }
+    // The leakage map works out the cells around the floor too, without changing the floor's.
+    run(&mut e, "settings.set", json!({"view": "leakage"}));
+    let leak = run(&mut e, "coverage.compute", json!({}));
+    assert_eq!(leak["floor_m2"], apart["floor_m2"], "{leak}");
+    assert_eq!(leak["pct_at_least_67"], apart["pct_at_least_67"], "{leak}");
+    assert!(
+        leak["leakage"]["m2_at_least_75"].as_f64().unwrap() > 0.0,
+        "{leak}"
+    );
+}
+
+/// A project saved before channels and maps existed opens, with them unset.
+#[test]
+fn an_older_project_opens() {
+    let dir = std::env::temp_dir().join(format!("radiocraft-old-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("old.rcraft");
+    let old = json!({
+        "format": "radiocraft-project/1",
+        "plan": fixture("cadcraft-apartment.dxf"),
+        "materials": [{"source": "A-WALL", "kind": "layer", "material": "concrete"}],
+        "routers": [{"name": "Hall", "at": [5000, 4000], "height": 2400, "power": {"device": "generic-router"}}],
+        "settings": {"band": "5", "grid_step": 100, "client_height": 1000, "exponent": 2.2, "slice_height": 1000, "cap_eirp": true, "close_gaps": 1000, "up": "z"},
+        "devices_file": null,
+    });
+    std::fs::write(&path, old.to_string()).unwrap();
+    let mut e = Engine::new();
+    run(
+        &mut e,
+        "project.open",
+        json!({"path": path.to_string_lossy()}),
+    );
+    let routers = run(&mut e, "router.list", json!({}));
+    assert_eq!(routers[0]["channels"], json!({}));
+    assert_eq!(e.settings().view, radiocraft_engine::radio::View::Signal);
+    assert!(run(&mut e, "coverage.compute", json!({}))["pct_at_least_67"].is_number());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn hostile_commands_are_refused() {
     let mut e = Engine::new();
@@ -243,6 +336,24 @@ fn hostile_commands_are_refused() {
         ("router.move", json!({"id": 99, "at": [0, 0]})),
         ("settings.set", json!({"band": "60"})),
         ("settings.set", json!({"grid_step": 0})),
+        ("settings.set", json!({"view": "heat"})),
+        ("settings.set", json!({"client_streams": 5})),
+        ("settings.set", json!({"client_streams": 1.5})),
+        ("router.add", json!({"at": [0, 0], "channels": {"5": 37}})),
+        (
+            "router.add",
+            json!({"at": [0, 0], "channels": {"2.4": {"channel": 6, "width": 40}}}),
+        ),
+        ("router.add", json!({"at": [0, 0], "channels": {"7": 1}})),
+        ("router.add", json!({"at": [0, 0], "channels": [36]})),
+        (
+            "router.add",
+            json!({"at": [0, 0], "channels": {"6": {"channel": 229, "width": 160}}}),
+        ),
+        (
+            "router.add",
+            json!({"at": [0, 0], "channels": {"5": {"channel": 65536}}}),
+        ),
         (
             "material.set",
             json!({"source": "A-WALL", "material": "brick"}),

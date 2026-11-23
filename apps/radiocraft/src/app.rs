@@ -6,7 +6,7 @@ use egui::{
     Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2,
 };
 use radiocraft_engine::materials::{Band, RF_PRESETS};
-use radiocraft_engine::model::SCALE;
+use radiocraft_engine::radio::{self, View as Map};
 use radiocraft_engine::{Engine, Power};
 use serde_json::{Value, json};
 
@@ -21,8 +21,11 @@ struct View {
     centre: [f64; 2],
     /// Plan millimetres per screen point.
     mm_per_pt: f64,
-    /// Whether it was fitted to the plan shown.
-    fitted_to: Option<String>,
+    /// The plan it was fitted to, and the size of the view then: until the user pans or zooms,
+    /// it fits again when the view's size changes (a panel growing, the window resizing).
+    fitted_to: Option<(String, Vec2)>,
+    /// The user has panned or zoomed since the fit.
+    moved: bool,
 }
 
 pub struct App {
@@ -54,6 +57,7 @@ impl App {
                 centre: [0.0, 0.0],
                 mm_per_pt: 20.0,
                 fitted_to: None,
+                moved: false,
             },
             texture: None,
             status: None,
@@ -172,6 +176,7 @@ impl App {
         if self.run(command, json!({"path": path})).is_some() {
             self.status = Some((format!("{} {path}", tr("Opened")), false));
             self.view.fitted_to = None;
+            self.view.moved = false;
             self.selected = None;
             self.slice = self.engine.settings().slice_height;
         }
@@ -239,6 +244,18 @@ impl App {
                     self.run("settings.set", json!({"band": b.name()}));
                 }
             }
+            ui.separator();
+            ui.label(tr("Map"));
+            let shown = self.engine.settings().view;
+            egui::ComboBox::from_id_salt("map")
+                .selected_text(tr(shown.label()))
+                .show_ui(ui, |ui| {
+                    for m in Map::ALL {
+                        if ui.selectable_label(m == shown, tr(m.label())).clicked() && m != shown {
+                            self.run("settings.set", json!({"view": m.id()}));
+                        }
+                    }
+                });
             ui.separator();
             ui.label(tr("Slice height"));
             let r = ui.add(
@@ -393,6 +410,41 @@ impl App {
                     commands.push(("router.set", json!({"id": r.id, "height": h})));
                 }
             });
+            // The channel in the shown band: its number and width; the engine refuses a pair
+            // the band's channel plan doesn't have.
+            let band = self.engine.settings().band;
+            let current = r.channels.get(band.index()).copied().flatten();
+            ui.horizontal(|ui| {
+                ui.label(tr("Channel"));
+                let text = current.map_or_else(|| tr("Not set"), |c| c.number.to_string());
+                egui::ComboBox::from_id_salt(format!("channel {}", r.id))
+                    .selected_text(text)
+                    .width(70.0)
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(current.is_none(), tr("Not set")).clicked() {
+                            commands.push(("router.set", json!({"id": r.id, "channels": {band.name(): null}})));
+                        }
+                        for n in channel_numbers(band) {
+                            let width = current.map_or(radio::default_width(band), |c| c.width);
+                            let width = if radio::Channel::new(band, n, width).is_some() { width } else { 20 };
+                            if ui.selectable_label(current.is_some_and(|c| c.number == n), n.to_string()).clicked() {
+                                commands.push(("router.set", json!({"id": r.id, "channels": {band.name(): {"channel": n, "width": width}}})));
+                            }
+                        }
+                    });
+                if let Some(c) = current {
+                    egui::ComboBox::from_id_salt(format!("width {}", r.id))
+                        .selected_text(format!("{} MHz", c.width))
+                        .width(80.0)
+                        .show_ui(ui, |ui| {
+                            for w in radio::widths(band) {
+                                if ui.selectable_label(c.width == *w, format!("{w} MHz")).clicked() {
+                                    commands.push(("router.set", json!({"id": r.id, "channels": {band.name(): {"channel": c.number, "width": w}}})));
+                                }
+                            }
+                        });
+                }
+            });
             let eirp = self.engine.eirp(r);
             let text: Vec<String> = Band::ALL
                 .iter()
@@ -452,33 +504,69 @@ impl App {
         } else {
             ui.label(tr("Add a router with a radio in this band."));
         }
+        // The figures only the engine's report has: roaming, link rate, channels, leakage.
+        if let Ok(f) = self.engine.execute("coverage.compute", &json!({})) {
+            egui::Grid::new("more_figures")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    let mut row = |label: String, value: Option<String>| {
+                        if let Some(value) = value {
+                            ui.label(label);
+                            ui.label(egui::RichText::new(value).monospace());
+                            ui.end_row();
+                        }
+                    };
+                    let pct = |k: &str| f[k].as_f64().map(|v| format!("{v:.0}%"));
+                    row(
+                        tr("Roaming: 2nd router ≥ −67 dBm"),
+                        pct("pct_second_at_least_67"),
+                    );
+                    row(
+                        tr("Median link rate"),
+                        f["median_rate_mbps"]
+                            .as_f64()
+                            .map(|v| format!("{v:.0} Mbit/s")),
+                    );
+                    row(
+                        tr("No overlapping channel heard"),
+                        pct("pct_no_channel_overlap"),
+                    );
+                    row(
+                        tr("Outside the walls ≥ −67 dBm"),
+                        f["leakage"]["m2_at_least_67"]
+                            .as_f64()
+                            .map(|v| format!("{v:.1} m²")),
+                    );
+                });
+        }
         ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new(tr("Key: share of the floor at each level or better"))
+        let key = match c.view {
+            Map::Serving | Map::Overlap => tr("Key: share of the floor"),
+            Map::Leakage => tr("Key: share of the area within 3 m outside the walls"),
+            _ => tr("Key: share of the floor at each level or better"),
+        };
+        ui.label(egui::RichText::new(key).color(TOKENS.text_dim).small());
+        if c.view == Map::Rate {
+            ui.label(
+                egui::RichText::new(tr(
+                    "Estimated from the signal alone, with nothing else on the air",
+                ))
                 .color(TOKENS.text_dim)
                 .small(),
-        );
-        for (i, (from, [r, g, b])) in SCALE.iter().enumerate() {
+            );
+        }
+        for row in &c.legend {
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+                let [r, g, b] = row.colour;
                 ui.painter()
-                    .rect_filled(rect, 2.0, Color32::from_rgb(*r, *g, *b));
-                let label = if from.is_finite() {
-                    format!("≥ {from:.0} dBm")
-                } else {
-                    format!(
-                        "< {:.0} dBm",
-                        SCALE.get(i.wrapping_sub(1)).map_or(-80.0, |(t, _)| *t)
-                    )
-                };
-                ui.label(egui::RichText::new(label).monospace());
-                if let Some(share) = c.floor_share.get(i) {
-                    ui.label(
-                        egui::RichText::new(format!("{share:.0}%"))
-                            .monospace()
-                            .color(TOKENS.text_dim),
-                    );
-                }
+                    .rect_filled(rect, 2.0, Color32::from_rgb(r, g, b));
+                ui.label(egui::RichText::new(tr(&row.label)).monospace());
+                ui.label(
+                    egui::RichText::new(format!("{:.0}%", row.share))
+                        .monospace()
+                        .color(TOKENS.text_dim),
+                );
             });
         }
     }
@@ -506,15 +594,17 @@ impl App {
         };
         let coverage = self.engine.coverage();
         // Fit the view to a newly opened plan.
-        if self.view.fitted_to.as_deref() != Some(path.as_str())
-            && let Some(b) = self.engine.plan().and_then(|p| p.bounds())
-        {
+        let stale = match &self.view.fitted_to {
+            Some((p, size)) => *p != path || (!self.view.moved && *size != rect.size()),
+            None => true,
+        };
+        if stale && let Some(b) = self.engine.plan().and_then(|p| p.bounds()) {
             let (w, h) = ((b[2] - b[0]).max(1.0), (b[3] - b[1]).max(1.0));
             self.view.centre = [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0];
             self.view.mm_per_pt = (w / f64::from(rect.width().max(1.0)))
                 .max(h / f64::from(rect.height().max(1.0)))
                 * 1.1;
-            self.view.fitted_to = Some(path);
+            self.view.fitted_to = Some((path, rect.size()));
         }
         let to_screen = |v: &View, p: [f64; 2]| -> Pos2 {
             Pos2::new(
@@ -535,6 +625,7 @@ impl App {
                 && let Some(pointer) = response.hover_pos()
             {
                 let before = to_plan(&self.view, pointer);
+                self.view.moved = true;
                 self.view.mm_per_pt =
                     (self.view.mm_per_pt * f64::from((-scroll / 300.0).exp())).clamp(0.05, 2000.0);
                 let after = to_plan(&self.view, pointer);
@@ -646,6 +737,7 @@ impl App {
                 }
                 _ => {
                     let d = response.drag_delta();
+                    self.view.moved = true;
                     self.view.centre = [
                         self.view.centre[0] - f64::from(d.x) * self.view.mm_per_pt,
                         self.view.centre[1] + f64::from(d.y) * self.view.mm_per_pt,
@@ -678,22 +770,15 @@ impl App {
             let at = to_plan(&self.view, pos);
             if let Some(v) = self.engine.execute("coverage.at", &json!({"at": at})).ok()
                 && let Some(band) = v["bands"].get(self.engine.settings().band.name())
-                && let Some(rssi) = band["rssi_dbm"].as_f64()
             {
-                // The signal and the router it comes from, when there's more than one.
-                let text = match band["from"].as_str() {
-                    Some(from) if self.engine.routers().len() > 1 => {
-                        format!("{rssi:.0} dBm · {from}")
-                    }
-                    _ => format!("{rssi:.0} dBm"),
-                };
-                painter.text(
-                    pos + Vec2::new(12.0, -12.0),
-                    Align2::LEFT_BOTTOM,
-                    text,
-                    FontId::monospace(12.0),
-                    TOKENS.text,
-                );
+                let text = probe_text(band, self.engine.routers().len());
+                if !text.is_empty() {
+                    let galley = painter.layout_no_wrap(text, FontId::monospace(12.0), TOKENS.text);
+                    let at = pos + Vec2::new(14.0, -14.0 - galley.size().y);
+                    let rect = Rect::from_min_size(at, galley.size()).expand(4.0);
+                    painter.rect_filled(rect, 3.0, TOKENS.tooltip);
+                    painter.galley(at, galley, TOKENS.text);
+                }
             }
         }
         if response.has_focus() || response.hovered() {
@@ -775,8 +860,61 @@ impl eframe::App for App {
             .show(ui, |ui| self.sources_panel(ui));
         egui::Panel::right("routers")
             .resizable(true)
-            .default_size(280.0)
+            .default_size(300.0)
+            .max_size(380.0)
             .show(ui, |ui| self.routers_panel(ui));
         egui::CentralPanel::default().show(ui, |ui| self.plan_view(ui));
     }
+}
+
+/// The 20 MHz channel numbers offered for `band`, as its channel plan has them.
+fn channel_numbers(band: Band) -> Vec<u16> {
+    (1..=233)
+        .filter(|n| radio::Channel::new(band, *n, 20).is_some())
+        .collect()
+}
+
+/// What the pointer's probe says about a point: the strongest routers and their channels, the
+/// link rate, and the routers on an overlapping channel heard there.
+fn probe_text(band: &Value, routers: usize) -> String {
+    let Some(rssi) = band["rssi_dbm"].as_f64() else {
+        return String::new();
+    };
+    let channel = |c: &Value| {
+        c["channel"]
+            .as_u64()
+            .map_or_else(String::new, |n| format!(" · ch {n}/{}", c["width"]))
+    };
+    let mut lines = Vec::new();
+    if routers > 1 {
+        for r in band["routers"].as_array().into_iter().flatten() {
+            lines.push(format!(
+                "{:.0} dBm  {}{}",
+                r["rssi_dbm"].as_f64().unwrap_or(f64::NAN),
+                r["name"].as_str().unwrap_or_default(),
+                channel(&r["channel"]),
+            ));
+        }
+    } else {
+        lines.push(format!("{rssi:.0} dBm"));
+    }
+    if let Some(rate) = band["rate_mbps"].as_f64() {
+        lines.push(if rate > 0.0 {
+            format!("{} {rate:.0} Mbit/s (MCS {})", tr("link"), band["mcs"])
+        } else {
+            tr("too weak to connect")
+        });
+    }
+    if let Some(n) = band["channel_overlap"].as_u64()
+        && n > 0
+    {
+        let names: Vec<&str> = band["interferers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|i| i["name"].as_str())
+            .collect();
+        lines.push(format!("{}: {}", tr("same channel"), names.join(", ")));
+    }
+    lines.join("\n")
 }

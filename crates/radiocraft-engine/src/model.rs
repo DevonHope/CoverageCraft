@@ -508,6 +508,27 @@ pub struct Model {
     pub client_height: f64,
 }
 
+/// The signal `e` gives at `p` in `band` (dBm); `None` when it has no radio in `band`.
+pub fn signal_at(
+    walls: &WallMap,
+    e: &Emitter,
+    model: &Model,
+    band: Band,
+    p: [f64; 2],
+    scratch: &mut Scratch,
+) -> Option<f64> {
+    let eirp = e.eirp(band)?;
+    let dz = e.height - model.client_height;
+    let d = ((p[0] - e.at[0]).powi(2) + (p[1] - e.at[1]).powi(2) + dz * dz).sqrt() / 1000.0;
+    Some(rssi(
+        eirp,
+        band,
+        model.exponent,
+        d,
+        walls.path_loss(e.at, p, band, scratch),
+    ))
+}
+
 /// The best signal any of `emitters` gives at `p` in `band`, and which emitter gives it; `None`
 /// when no emitter has a radio in `band`.
 pub fn best_at(
@@ -520,21 +541,47 @@ pub fn best_at(
 ) -> Option<(f64, usize)> {
     let mut best: Option<(f64, usize)> = None;
     for (i, e) in emitters.iter().enumerate() {
-        let Some(eirp) = e.eirp(band) else { continue };
-        let dz = e.height - model.client_height;
-        let d = ((p[0] - e.at[0]).powi(2) + (p[1] - e.at[1]).powi(2) + dz * dz).sqrt() / 1000.0;
-        let v = rssi(
-            eirp,
-            band,
-            model.exponent,
-            d,
-            walls.path_loss(e.at, p, band, scratch),
-        );
+        let Some(v) = signal_at(walls, e, model, band, p, scratch) else {
+            continue;
+        };
         if best.is_none_or(|(b, _)| v > b) {
             best = Some((v, i));
         }
     }
     best
+}
+
+/// Every emitter's signal at the centre of each cell `keep` selects, in one pass:
+/// `out[cell * emitters.len() + e]` (dBm), NaN where it isn't worked out or has no radio.
+pub fn signals(
+    walls: &WallMap,
+    emitters: &[Emitter],
+    model: &Model,
+    band: Band,
+    grid: &Grid,
+    keep: &dyn Fn(usize) -> bool,
+) -> Vec<f32> {
+    let n = emitters.len();
+    let mut scratch = Scratch::default();
+    let mut out = vec![f32::NAN; grid.len() * n];
+    for row in 0..grid.rows {
+        for column in 0..grid.columns {
+            let i = row * grid.columns + column;
+            if !keep(i) {
+                continue;
+            }
+            let p = grid.centre(column, row);
+            for (k, e) in emitters.iter().enumerate() {
+                if let (Some(slot), Some(v)) = (
+                    out.get_mut(i * n + k),
+                    signal_at(walls, e, model, band, p, &mut scratch),
+                ) {
+                    *slot = v as f32;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// A grid over the floor: cell centres at `origin + (i + ½)·step`.

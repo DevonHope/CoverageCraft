@@ -12,5 +12,7 @@ pub mod mesh;
 pub mod model;
 pub mod picture;
 pub mod plan;
+pub mod radio;
+pub mod views;
 
-pub use engine::{COMMANDS, Coverage, Engine, EngineError, Power, Router, Settings};
+pub use engine::{COMMANDS, Coverage, Engine, EngineError, Field, Power, Router, Settings};

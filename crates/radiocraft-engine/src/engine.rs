@@ -11,6 +11,8 @@ use crate::materials::{Band, Material, RF_PRESETS};
 use crate::mesh::{Up, read_mesh};
 use crate::model::{self, Cell, Emitter, Grid, Model, Scratch, WallMap};
 use crate::plan::{FloorPlan, SourceKind};
+use crate::radio::{Channel, HEARD_DBM, View, default_width, link_rate};
+use crate::views::{self, Derived, LegendRow};
 
 /// The largest plan or project file read, in bytes.
 const MAX_FILE_BYTES: u64 = 512 << 20;
@@ -18,6 +20,10 @@ const MAX_FILE_BYTES: u64 = 512 << 20;
 const MAX_COORD: f64 = 1.0e8;
 /// The most routers a plan has.
 const MAX_ROUTERS: usize = 64;
+/// How far past the floor's outline the leakage map looks (mm).
+const LEAK_MM: f64 = 3000.0;
+/// The most signals (cells × routers) kept at once: 64 MB.
+const MAX_SIGNALS: usize = 16_000_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -55,6 +61,8 @@ pub struct Router {
     /// Height above the floor (mm).
     pub height: f64,
     pub power: Power,
+    /// Its channel in each band (2.4, 5, 6 GHz); `None` where it isn't set.
+    pub channels: [Option<Channel>; 3],
 }
 
 /// The analysis settings.
@@ -72,6 +80,10 @@ pub struct Settings {
     /// Openings narrower than this (mm) close the floor.
     pub close_gaps: f64,
     pub up: Up,
+    /// What the map shows.
+    pub view: View,
+    /// The receiving device's spatial streams, for the link rate.
+    pub client_streams: u8,
 }
 
 impl Default for Settings {
@@ -85,26 +97,49 @@ impl Default for Settings {
             cap_eirp: true,
             close_gaps: 1000.0,
             up: Up::Z,
+            view: View::Signal,
+            client_streams: 2,
         }
     }
 }
 
-/// What the analysis found for the shown band.
+/// Every router's signal over the grid for the shown band, and what each cell gets from them:
+/// worked out once, then every map is drawn from it.
 #[derive(Clone, Debug)]
-pub struct Coverage {
+pub struct Field {
     pub band: Band,
     pub grid: Grid,
     pub cells: Vec<Cell>,
+    /// Where the floor came from: "enclosed" or "open".
+    pub floor: &'static str,
+    pub walls: Arc<WallMap>,
+    /// `cell * routers + router` (dBm); NaN where not worked out.
+    pub signals: Vec<f32>,
+    pub names: Vec<String>,
+    pub channels: Vec<Option<Channel>>,
+    pub derived: Derived,
+    /// Whether cells outside the floor were worked out too (for the leakage map).
+    pub outside: bool,
+}
+
+/// What the analysis found for the shown band, drawn as the shown map.
+#[derive(Clone, Debug)]
+pub struct Coverage {
+    pub band: Band,
+    pub view: View,
+    pub grid: Grid,
+    pub cells: Vec<Cell>,
+    /// The strongest signal at each cell (dBm); NaN where not worked out.
     pub values: Vec<f32>,
-    /// Straight RGBA8, a pixel a cell, the first row the grid's lowest.
+    /// The shown map: straight RGBA8, a pixel a cell, the first row the grid's lowest.
     pub rgba: Arc<Vec<u8>>,
+    /// The shown map's key.
+    pub legend: Vec<LegendRow>,
     pub stats: Option<model::Stats>,
     /// Where the floor came from: "enclosed" or "open".
     pub floor: &'static str,
     pub walls: Arc<WallMap>,
-    /// For each step of [`model::SCALE`], the share of the floor (0–100) at its level or better;
-    /// for the last, open step, the share below the one before it.
-    pub floor_share: Vec<f64>,
+    pub field: Arc<Field>,
 }
 
 /// RadioCraft's state.
@@ -116,6 +151,7 @@ pub struct Engine {
     devices: Vec<Device>,
     devices_file: Option<String>,
     walls: Option<Arc<WallMap>>,
+    field: Option<Arc<Field>>,
     coverage: Option<Arc<Coverage>>,
     /// Changes whenever anything shown changes.
     revision: u64,
@@ -131,6 +167,7 @@ impl Default for Engine {
             devices: devices::generic(),
             devices_file: None,
             walls: None,
+            field: None,
             coverage: None,
             revision: 0,
         }
@@ -142,11 +179,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("commands.list", "{} → the commands"),
     (
         "coverage.at",
-        "{at: [x, y]} → the signal there in each band, and from which router",
+        "{at: [x, y]} → in each band: the strongest signal and its router, the three strongest routers with their channels, the link rate, and the routers on an overlapping channel heard there",
     ),
     (
         "coverage.compute",
-        "{values?: bool} → the shown band's coverage figures (values: every cell's signal)",
+        "{values?: bool, leakage?: bool} → the shown band's figures: coverage, second-router (roaming) cover, link rate, channel overlap; leakage: the area outside the walls with signal (values: every cell's signal)",
     ),
     ("devices.list", "{} → the devices a router can name"),
     (
@@ -179,15 +216,18 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "router.add",
-        "{at: [x, y], height?, name?, device? | eirp_dbm?: dBm | {\"2.4\",\"5\",\"6\"}} → {id}",
+        "{at: [x, y], height?, name?, device? | eirp_dbm?: dBm | {\"2.4\",\"5\",\"6\"}, channels?: {\"2.4\": 6, \"5\": {channel: 36, width: 80}, ...}} → {id}",
     ),
     ("router.list", "{} → the routers"),
     ("router.move", "{id, at: [x, y]}"),
     ("router.remove", "{id}"),
-    ("router.set", "{id, name?, height?, device? | eirp_dbm?}"),
+    (
+        "router.set",
+        "{id, name?, height?, device? | eirp_dbm?, channels?: {band: channel | {channel, width} | null}}",
+    ),
     (
         "settings.set",
-        "{band?: 2.4|5|6, grid_step?, client_height?, exponent?, slice_height?, cap_eirp?, close_gaps?, up?}",
+        "{band?: 2.4|5|6, view?: signal|second|serving|overlap|rate|leakage, client_streams?: 1-4, grid_step?, client_height?, exponent?, slice_height?, cap_eirp?, close_gaps?, up?}",
     ),
 ];
 
@@ -274,6 +314,50 @@ fn band_map(values: &[Option<f64>; 3]) -> Value {
     Value::Object(m)
 }
 
+fn channels_param(
+    command: &str,
+    v: &Value,
+    mut current: [Option<Channel>; 3],
+) -> Result<[Option<Channel>; 3]> {
+    let m = v.as_object().ok_or_else(|| {
+        bad(
+            command,
+            "`channels` is {\"2.4\": 6, \"5\": {\"channel\": 36, \"width\": 80}, ...}",
+        )
+    })?;
+    for (k, v) in m {
+        let band = Band::parse(k)
+            .ok_or_else(|| bad(command, "`channels` keys are \"2.4\", \"5\" and \"6\""))?;
+        let slot = current
+            .get_mut(band.index())
+            .ok_or_else(|| bad(command, "no such band"))?;
+        *slot = if v.is_null() {
+            None
+        } else {
+            Some(Channel::from_json(band, v).ok_or_else(|| {
+                bad(
+                    command,
+                    format!(
+                        "`channels.{k}`: {v} isn't a {k} GHz channel (widths: {:?} MHz)",
+                        crate::radio::widths(band)
+                    ),
+                )
+            })?)
+        };
+    }
+    Ok(current)
+}
+
+fn channels_json(c: &[Option<Channel>; 3]) -> Value {
+    let mut m = serde_json::Map::new();
+    for b in Band::ALL {
+        if let Some(Some(ch)) = c.get(b.index()) {
+            m.insert(b.name().to_string(), ch.to_json());
+        }
+    }
+    Value::Object(m)
+}
+
 fn read_file(command: &str, path: &str) -> Result<Vec<u8>> {
     let meta = std::fs::metadata(path).map_err(|e| bad(command, format!("{path}: {e}")))?;
     if !meta.is_file() {
@@ -316,6 +400,7 @@ impl Engine {
     fn changed(&mut self, walls_too: bool) {
         self.revision = self.revision.wrapping_add(1);
         self.coverage = None;
+        self.field = None;
         if walls_too {
             self.walls = None;
         }
@@ -504,6 +589,10 @@ impl Engine {
         let at = point(command, p, "at")?;
         let height = ranged(command, p, "height", -MAX_COORD, MAX_COORD)?
             .unwrap_or(self.settings.client_height);
+        let channels = match p.get("channels") {
+            None | Some(Value::Null) => [None; 3],
+            Some(v) => channels_param(command, v, [None; 3])?,
+        };
         let power = self.power(command, p)?.unwrap_or_else(|| {
             Power::Device(
                 self.devices
@@ -525,6 +614,7 @@ impl Engine {
             at,
             height,
             power,
+            channels,
         });
         self.changed(false);
         Ok(json!({"id": id}))
@@ -544,6 +634,10 @@ impl Engine {
         let i = self.router(command, p)?;
         let height = ranged(command, p, "height", -MAX_COORD, MAX_COORD)?;
         let power = self.power(command, p)?;
+        let channels = match (p.get("channels"), self.routers.get(i)) {
+            (Some(v), Some(r)) if !v.is_null() => Some(channels_param(command, v, r.channels)?),
+            _ => None,
+        };
         let name = p
             .get("name")
             .and_then(Value::as_str)
@@ -558,6 +652,9 @@ impl Engine {
             }
             if let Some(name) = name {
                 r.name = name;
+            }
+            if let Some(c) = channels {
+                r.channels = c;
             }
         }
         self.changed(false);
@@ -580,7 +677,7 @@ impl Engine {
             Power::Device(id) => (Some(id.clone()), self.eirp(r)),
             Power::Eirp(e) => (None, self.cap(*e)),
         };
-        json!({"id": r.id, "name": r.name, "at": r.at, "height": r.height, "device": device, "eirp_dbm": band_map(&eirp)})
+        json!({"id": r.id, "name": r.name, "at": r.at, "height": r.height, "device": device, "eirp_dbm": band_map(&eirp), "channels": channels_json(&r.channels)})
     }
 
     fn cap(&self, eirp: [Option<f64>; 3]) -> [Option<f64>; 3] {
@@ -628,6 +725,20 @@ impl Engine {
         if let Some(v) = ranged(command, p, "close_gaps", 0.0, 5000.0)? {
             s.close_gaps = v;
         }
+        if let Some(v) = p.get("view").filter(|v| !v.is_null()) {
+            s.view = v.as_str().and_then(View::parse).ok_or_else(|| {
+                bad(
+                    command,
+                    "`view` is signal, second, serving, overlap, rate or leakage",
+                )
+            })?;
+        }
+        if let Some(v) = ranged(command, p, "client_streams", 1.0, 4.0)? {
+            if v.fract() != 0.0 {
+                return Err(bad(command, "`client_streams` is 1, 2, 3 or 4"));
+            }
+            s.client_streams = v as u8;
+        }
         if let Some(v) = p.get("cap_eirp") {
             s.cap_eirp = v
                 .as_bool()
@@ -645,7 +756,17 @@ impl Engine {
         if let Some(h) = new_slice {
             s.slice_height = h;
         }
+        // Another map of the same signals is only drawn again.
+        let only_view = Settings {
+            view: self.settings.view,
+            ..s.clone()
+        } == self.settings;
         self.settings = s;
+        if only_view {
+            self.revision = self.revision.wrapping_add(1);
+            self.coverage = None;
+            return Ok(self.settings_json());
+        }
         // A model is cut again at the new height; a DXF plan has no height.
         if recut && let Some(path) = self.plan.as_ref().map(|p| p.path.clone()) {
             let lower = path.to_ascii_lowercase();
@@ -654,15 +775,23 @@ impl Engine {
             }
         }
         self.changed(true);
-        Ok(json!({
-            "band": self.settings.band.name(),
-            "grid_step": self.settings.grid_step,
-            "client_height": self.settings.client_height,
-            "exponent": self.settings.exponent,
-            "slice_height": self.settings.slice_height,
-            "cap_eirp": self.settings.cap_eirp,
-            "close_gaps": self.settings.close_gaps,
-        }))
+        Ok(self.settings_json())
+    }
+
+    fn settings_json(&self) -> Value {
+        let s = &self.settings;
+        json!({
+            "band": s.band.name(),
+            "view": s.view.id(),
+            "client_streams": s.client_streams,
+            "grid_step": s.grid_step,
+            "client_height": s.client_height,
+            "exponent": s.exponent,
+            "slice_height": s.slice_height,
+            "cap_eirp": s.cap_eirp,
+            "close_gaps": s.close_gaps,
+            "up": if s.up == Up::Y { "y" } else { "z" },
+        })
     }
 
     fn emitters(&self) -> Vec<Emitter> {
@@ -692,11 +821,13 @@ impl Engine {
         self.walls.clone()
     }
 
-    /// The coverage of the shown band, worked out once until something changes. `None` without a
-    /// plan or with nothing to analyse.
-    pub fn coverage(&mut self) -> Option<Arc<Coverage>> {
-        if let Some(c) = &self.coverage {
-            return Some(c.clone());
+    /// Every router's signal over the grid for the shown band, worked out once until something
+    /// changes; `outside` also works out the cells around the floor (for the leakage map).
+    fn field(&mut self, outside: bool) -> Option<Arc<Field>> {
+        if let Some(f) = &self.field
+            && (f.outside || !outside)
+        {
+            return Some(f.clone());
         }
         let walls = self.walls()?;
         let bounds = walls.bounds()?;
@@ -731,25 +862,108 @@ impl Engine {
                 }
             })
             .collect();
-        let emitters = self.emitters();
-        let values = if emitters.iter().any(|e| e.eirp(s.band).is_some()) {
-            model::coverage(&walls, &emitters, &self.model(), s.band, &grid, &cells)
+        // The leakage map pads the same grid with whole cells, all outside the floor, so the
+        // floor's cells, and its figures, are the same in every map.
+        let (grid, cells) = if outside {
+            let k = (LEAK_MM / s.grid_step).ceil() as usize;
+            let big = Grid {
+                origin: [
+                    grid.origin[0] - k as f64 * grid.step,
+                    grid.origin[1] - k as f64 * grid.step,
+                ],
+                step: grid.step,
+                columns: grid.columns + 2 * k,
+                rows: grid.rows + 2 * k,
+            };
+            let mut padded = vec![Cell::Outside; big.len()];
+            for row in 0..grid.rows {
+                for column in 0..grid.columns {
+                    if let (Some(slot), Some(c)) = (
+                        padded.get_mut((row + k) * big.columns + column + k),
+                        cells.get(row * grid.columns + column),
+                    ) {
+                        *slot = *c;
+                    }
+                }
+            }
+            if big.len() > model::MAX_CELLS {
+                return None;
+            }
+            (big, padded)
         } else {
-            vec![f32::NAN; grid.len()]
+            (grid, cells)
         };
-        let rgba = Arc::new(model::rgba(&values, &cells, &grid));
-        let stats = model::stats(&values, &cells);
-        let floor_share = floor_share(&values, &cells);
-        let c = Arc::new(Coverage {
+        if grid.len().saturating_mul(self.routers.len().max(1)) > MAX_SIGNALS {
+            return None;
+        }
+        let emitters = self.emitters();
+        let keep = |i: usize| match cells.get(i) {
+            Some(Cell::Floor) => true,
+            Some(Cell::Outside) => outside,
+            _ => false,
+        };
+        let signals = model::signals(&walls, &emitters, &self.model(), s.band, &grid, &keep);
+        let channels: Vec<Option<Channel>> = self
+            .routers
+            .iter()
+            .map(|r| r.channels.get(s.band.index()).copied().flatten())
+            .collect();
+        let derived = views::derive(
+            &signals,
+            emitters.len(),
+            &channels,
+            s.band,
+            s.client_streams,
+        );
+        let derived = if emitters.is_empty() {
+            Derived {
+                best: vec![f32::NAN; grid.len()],
+                second: vec![f32::NAN; grid.len()],
+                serving: vec![-1; grid.len()],
+                overlap: vec![-1; grid.len()],
+                rate: vec![f32::NAN; grid.len()],
+            }
+        } else {
+            derived
+        };
+        let f = Arc::new(Field {
             band: s.band,
             grid,
             cells,
-            values,
-            rgba,
-            stats,
             floor,
             walls,
-            floor_share,
+            signals,
+            names: emitters.iter().map(|e| e.name.clone()).collect(),
+            channels,
+            derived,
+            outside,
+        });
+        self.field = Some(f.clone());
+        Some(f)
+    }
+
+    /// The shown band's coverage drawn as the shown map, worked out once until something
+    /// changes. `None` without a plan or with nothing to analyse.
+    pub fn coverage(&mut self) -> Option<Arc<Coverage>> {
+        if let Some(c) = &self.coverage {
+            return Some(c.clone());
+        }
+        let view = self.settings.view;
+        let f = self.field(view == View::Leakage)?;
+        let (rgba, legend) = views::picture(view, &f.derived, &f.cells, &f.names);
+        let stats = model::stats(&f.derived.best, &f.cells);
+        let c = Arc::new(Coverage {
+            band: f.band,
+            view,
+            grid: f.grid.clone(),
+            cells: f.cells.clone(),
+            values: f.derived.best.clone(),
+            rgba: Arc::new(rgba),
+            legend,
+            stats,
+            floor: f.floor,
+            walls: f.walls.clone(),
+            field: f,
         });
         self.coverage = Some(c.clone());
         Some(c)
@@ -759,7 +973,7 @@ impl Engine {
         if self.plan.is_none() {
             return Err(bad(command, "no plan is open (plan.open)"));
         }
-        let c = self.coverage().ok_or_else(|| bad(command, "the plan has no walls to analyse: every layer or object is ignored, or none is closed"))?;
+        let c = self.coverage().ok_or_else(|| bad(command, "nothing to analyse: every layer or object is ignored or none is closed, or the grid is too fine for the plan and its routers (raise grid_step)"))?;
         let round = |v: f64| (v * 10.0).round() / 10.0;
         let cell_m2 = c.grid.step * c.grid.step / 1e6;
         let mut out = json!({
@@ -777,8 +991,58 @@ impl Engine {
             out["median_dbm"] = json!(round(st.median));
             out["min_dbm"] = json!(round(st.min));
             out["max_dbm"] = json!(round(st.max));
+            let d = &c.field.derived;
+            let on_floor: Vec<usize> = (0..c.cells.len())
+                .filter(|i| c.cells.get(*i) == Some(&Cell::Floor))
+                .collect();
+            let n = on_floor.len().max(1) as f64;
+            let pct = |keep: &dyn Fn(usize) -> bool| {
+                round(on_floor.iter().filter(|i| keep(**i)).count() as f64 / n * 100.0)
+            };
+            if self.routers.len() > 1 {
+                out["pct_second_at_least_67"] = json!(pct(&|i| d
+                    .second
+                    .get(i)
+                    .is_some_and(|v| f64::from(*v) >= model::FAIR_DBM)));
+            }
+            let mut rates: Vec<f64> = on_floor
+                .iter()
+                .filter_map(|i| d.rate.get(*i).map(|r| f64::from(*r)))
+                .filter(|r| r.is_finite())
+                .collect();
+            rates.sort_by(f64::total_cmp);
+            if let Some(m) = rates.get(rates.len() / 2) {
+                out["median_rate_mbps"] = json!(round(*m));
+            }
+            if c.field.channels.iter().any(Option::is_some) {
+                out["pct_no_channel_overlap"] =
+                    json!(pct(&|i| d.overlap.get(i).copied() == Some(0)));
+                out["pct_channel_unset"] = json!(pct(&|i| d.overlap.get(i).copied() == Some(-1)));
+            }
         } else {
             out["note"] = json!("no router has a radio in this band: add a router (router.add)");
+        }
+        if p.get("leakage").and_then(Value::as_bool).unwrap_or(false) || c.view == View::Leakage {
+            let f = self
+                .field(true)
+                .ok_or_else(|| bad(command, "nothing to analyse"))?;
+            let outside: Vec<usize> = (0..f.cells.len())
+                .filter(|i| f.cells.get(*i) == Some(&Cell::Outside))
+                .collect();
+            let m2 = |t: f64| {
+                round(
+                    outside
+                        .iter()
+                        .filter(|i| f.derived.best.get(**i).is_some_and(|v| f64::from(*v) >= t))
+                        .count() as f64
+                        * cell_m2,
+                )
+            };
+            out["leakage"] = if f.floor == "open" {
+                json!({"note": "the floor isn't enclosed, so nothing is outside it"})
+            } else {
+                json!({"within_mm": LEAK_MM, "m2_at_least_67": m2(model::FAIR_DBM), "m2_at_least_75": m2(-75.0)})
+            };
         }
         if p.get("values").and_then(Value::as_bool).unwrap_or(false) {
             out["values"] = json!(
@@ -798,21 +1062,56 @@ impl Engine {
             .ok_or_else(|| bad(command, "no plan is open (plan.open)"))?;
         let emitters = self.emitters();
         let model = self.model();
+        let round = |v: f64| (v * 10.0).round() / 10.0;
         let mut scratch = Scratch::default();
         let mut out = serde_json::Map::new();
         for band in Band::ALL {
-            if let Some((v, i)) = model::best_at(&walls, &emitters, &model, band, at, &mut scratch)
-            {
-                let from = emitters.get(i);
-                out.insert(
-                    band.name().to_string(),
-                    json!({
-                        "rssi_dbm": (v * 10.0).round() / 10.0,
-                        "from": from.map(|e| e.name.clone()),
-                        "walls_db": from.map(|e| (walls.path_loss(e.at, at, band, &mut scratch) * 10.0).round() / 10.0),
-                    }),
-                );
-            }
+            // The same per-router signals the maps are drawn from.
+            let mut heard: Vec<(f64, usize)> = emitters
+                .iter()
+                .enumerate()
+                .filter_map(|(k, e)| {
+                    model::signal_at(&walls, e, &model, band, at, &mut scratch).map(|v| (v, k))
+                })
+                .collect();
+            heard.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let Some(&(best, k)) = heard.first() else {
+                continue;
+            };
+            let channel = |j: usize| {
+                self.routers
+                    .get(j)
+                    .and_then(|r| r.channels.get(band.index()).copied().flatten())
+            };
+            let width = channel(k).map_or(default_width(band), |c| c.width);
+            let rate = link_rate(best, width, self.settings.client_streams);
+            let from = emitters.get(k);
+            let interferers: Vec<Value> = match channel(k) {
+                Some(own) => heard
+                    .iter()
+                    .skip(1)
+                    .filter(|(v, j)| *v >= HEARD_DBM && channel(*j).is_some_and(|c| c.overlaps(own, band)))
+                    .map(|(v, j)| json!({"name": emitters.get(*j).map(|e| e.name.clone()), "rssi_dbm": round(*v), "channel": channel(*j).map(Channel::to_json)}))
+                    .collect(),
+                None => Vec::new(),
+            };
+            out.insert(
+                band.name().to_string(),
+                json!({
+                    "rssi_dbm": round(best),
+                    "from": from.map(|e| e.name.clone()),
+                    "walls_db": from.map(|e| round(walls.path_loss(e.at, at, band, &mut scratch))),
+                    "routers": heard.iter().take(3).map(|(v, j)| json!({
+                        "name": emitters.get(*j).map(|e| e.name.clone()),
+                        "rssi_dbm": round(*v),
+                        "channel": channel(*j).map(Channel::to_json),
+                    })).collect::<Vec<_>>(),
+                    "mcs": rate.map(|r| r.0),
+                    "rate_mbps": rate.map_or(0.0, |r| r.1),
+                    "channel_overlap": channel(k).map(|_| interferers.len()),
+                    "interferers": interferers,
+                }),
+            );
         }
         Ok(json!({"at": at, "bands": out}))
     }
@@ -860,13 +1159,11 @@ impl Engine {
             "materials": plan.map(|p| p.sources.iter().map(|s| json!({"source": s.name, "kind": s.kind.name(), "material": s.material.to_json()})).collect::<Vec<_>>()),
             "routers": self.routers.iter().map(|r| {
                 let power = match &r.power { Power::Device(id) => json!({"device": id}), Power::Eirp(e) => json!({"eirp_dbm": band_map(e)}) };
-                json!({"name": r.name, "at": r.at, "height": r.height, "power": power})
+                json!({"name": r.name, "at": r.at, "height": r.height, "power": power, "channels": channels_json(&r.channels)})
             }).collect::<Vec<_>>(),
-            "settings": {
-                "band": self.settings.band.name(), "grid_step": self.settings.grid_step, "client_height": self.settings.client_height,
-                "exponent": self.settings.exponent, "slice_height": self.settings.slice_height, "cap_eirp": self.settings.cap_eirp,
-                "close_gaps": self.settings.close_gaps, "up": if self.settings.up == Up::Y { "y" } else { "z" },
-            },
+            // Fields added after the first beta (view, client_streams, channels) are optional
+            // when read, so older projects open unchanged: the format name stays.
+            "settings": self.settings_json(),
             "devices_file": self.devices_file,
         });
         let text =
@@ -911,8 +1208,7 @@ impl Engine {
             .into_iter()
             .flatten()
         {
-            let mut params =
-                json!({"at": r.get("at"), "height": r.get("height"), "name": r.get("name")});
+            let mut params = json!({"at": r.get("at"), "height": r.get("height"), "name": r.get("name"), "channels": r.get("channels")});
             if let Some(power) = r.get("power").and_then(Value::as_object) {
                 for (k, v) in power {
                     params[k] = v.clone();
@@ -924,34 +1220,4 @@ impl Engine {
         self.revision = self.revision.wrapping_add(1);
         Ok(json!({"path": path, "routers": self.routers.len()}))
     }
-}
-
-/// For each step of the scale, the share of the floor (0–100) at its level or better; for the
-/// last, open step, the share below the one before it.
-fn floor_share(values: &[f32], cells: &[Cell]) -> Vec<f64> {
-    let floor: Vec<f64> = values
-        .iter()
-        .zip(cells)
-        .filter(|(v, c)| **c == Cell::Floor && v.is_finite())
-        .map(|(v, _)| f64::from(*v))
-        .collect();
-    let n = floor.len().max(1) as f64;
-    let share = |keep: &dyn Fn(f64) -> bool| {
-        (floor.iter().filter(|v| keep(**v)).count() as f64 / n * 1000.0).round() / 10.0
-    };
-    let scale = &model::SCALE;
-    scale
-        .iter()
-        .enumerate()
-        .map(|(i, (from, _))| {
-            if from.is_finite() {
-                share(&|v| v >= *from)
-            } else {
-                let above = scale
-                    .get(i.wrapping_sub(1))
-                    .map_or(f64::NEG_INFINITY, |(t, _)| *t);
-                share(&|v| v < above)
-            }
-        })
-        .collect()
 }
