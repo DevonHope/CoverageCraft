@@ -4,7 +4,6 @@
 //! - `radiocraft-cli exec <command> [json]`: run one command on an empty session.
 //! - `radiocraft-cli script <script.json>`: run `{"commands": [{"command", "params"}...]}` in order.
 //! - `radiocraft-cli plan <plan.dxf|.obj|.stl> [options]`: open a plan, place routers, report.
-//! - `radiocraft-cli icon <out.png|out.svg> [size]`: write the app's logo.
 
 use std::process::ExitCode;
 
@@ -15,7 +14,6 @@ const USAGE: &str = "usage:
   radiocraft-cli commands
   radiocraft-cli exec <command> [json-params]
   radiocraft-cli script <script.json>
-  radiocraft-cli icon <out.png|out.svg> [size]
   radiocraft-cli plan <plan.dxf|.obj|.stl> [--router x,y[,height]]... [--device id | --eirp dBm] [--devices file.json]
                       [--band 2.4|5|6] [--slice mm] [--material source=material]... [--png out.png] [--save project.rcraft]";
 
@@ -77,24 +75,6 @@ fn run(args: &[String]) -> Result<Value, String> {
             Ok(json!(results))
         }
         Some("plan") => plan(&mut engine, args.get(1..).unwrap_or(&[])),
-        Some("icon") => {
-            let path = args.get(1).ok_or(USAGE)?;
-            let bytes = if path.to_ascii_lowercase().ends_with(".svg") {
-                radiocraft_engine::icon::svg().into_bytes()
-            } else {
-                let size: u32 = match args.get(2) {
-                    Some(s) => s
-                        .parse()
-                        .ok()
-                        .filter(|n| (16..=2048).contains(n))
-                        .ok_or("the size is 16 to 2048")?,
-                    None => 1024,
-                };
-                radiocraft_engine::icon::png(size)?
-            };
-            std::fs::write(path, bytes).map_err(|e| format!("{path}: {e}"))?;
-            Ok(json!({"path": path}))
-        }
         _ => Err(USAGE.to_string()),
     }
 }

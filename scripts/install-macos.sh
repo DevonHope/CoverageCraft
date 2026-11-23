@@ -50,12 +50,13 @@ rm -rf "$NEW"
 mkdir -p "$NEW/Contents/MacOS" "$NEW/Contents/Resources"
 cp "$BIN/radiocraft" "$BIN/radiocraft-cli" "$NEW/Contents/MacOS/"
 echo "$COMMIT" > "$NEW/Contents/Resources/commit.txt"
-# The app icon, drawn by the same code as the window's icon and assets/icon.svg.
+# The app icon: the logo drawn in VectorCraft (assets/icon.vectorcraft), exported as
+# assets/icon-1024.png, at each size macOS wants.
 ICONSET=$(mktemp -d)/RadioCraft.iconset
 mkdir -p "$ICONSET"
 for s in 16 32 128 256 512; do
-    "$BIN/radiocraft-cli" icon "$ICONSET/icon_${s}x${s}.png" "$s" >/dev/null
-    "$BIN/radiocraft-cli" icon "$ICONSET/icon_${s}x${s}@2x.png" "$((s * 2))" >/dev/null
+    sips -z "$s" "$s" assets/icon-1024.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+    sips -z "$((s * 2))" "$((s * 2))" assets/icon-1024.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$NEW/Contents/Resources/RadioCraft.icns"
 rm -rf "$(dirname "$ICONSET")"
