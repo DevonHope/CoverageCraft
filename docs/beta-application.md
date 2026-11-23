@@ -39,14 +39,11 @@ https://github.com/DevonHope/RadioCraft
 
 ## Notes before sending
 
-- **Name check (blocks sending).** "NetCraft" was the first choice, but NETCRAFT is a live US
-  trademark of Netcraft Ltd for software and computer services, so it fails the Craft naming
-  standard (`standards/naming.md`, "unclear means no"). "RadioCraft" is unclear too: an
-  ARRL-funded Minecraft radio mod and other software projects use it, and Radiocrafts AS makes RF
-  radio modules. The maintainer chose to keep RadioCraft (2026-11-22); CoverageCraft and
-  AirwaveCraft are the fallbacks. Before sending, run the trademark register search (USPTO,
-  EUIPO, WIPO; classes 9 and 42), record it in `docs/feature-names.md`, and mention the other
-  uses of the name in the form so the beta team can judge.
+- **Name check (blocks sending).** The trademark register search (2026-11-23, recorded in
+  `docs/feature-names.md`) found RADIOCRAFT registered in Canada for radio equipment and
+  RADIOCRAFTS registered in the EU, the US and elsewhere for radio modules, both class 9, so
+  "RadioCraft" fails the Craft naming standard (`standards/naming.md`, "unclear means no").
+  CoverageCraft and AirwaveCraft came back clear. Rename before sending.
 - **"Wi-Fi"** is a Wi-Fi Alliance trademark. The description uses it only to say what the app
   plans, as the naming standard allows for a technology the app works with. Feature labels say
   "signal", "coverage" and "router" instead.
