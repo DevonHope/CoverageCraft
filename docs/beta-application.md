@@ -1,8 +1,8 @@
-# ArtCraft Beta signup: draft
+# ArtCraft Beta signup
 
 Draft answers for the form at https://getartcraft.com/beta (fields: App name, Email, Repo,
-Description, Website). Nothing here has been sent. Fill in the email when you submit, and clear
-the name check at the end first.
+Description, Website). Sent on 2026-11-23 with the answers below (website: the README), under
+the name CoverageCraft; the beta team replies by email if it is selected.
 
 ---
 
