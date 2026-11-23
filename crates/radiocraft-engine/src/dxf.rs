@@ -9,6 +9,7 @@
 //! - Coordinates are scaled to millimetres from the drawing's `$INSUNITS`; paper-space and
 //!   invisible entities are left out.
 
+use crate::viewpoint::{Basis, PlanView};
 use std::collections::HashMap;
 
 use craft_dxf::model::{
@@ -138,7 +139,50 @@ pub fn read_dxf(bytes: &[u8], path: &str) -> Result<FloorPlan, DxfImportError> {
             reader.push(&layer, Shape::Area(area));
         }
     }
+    reader.plan.views = views(&doc, scale, &mut reader.plan.notes);
     Ok(reader.plan)
+}
+
+/// The drawing's viewpoints: the whole of it, then each named view of model space that looks
+/// straight down, as the part of the drawing it frames.
+fn views(doc: &Document<'_>, scale: f64, notes: &mut Vec<String>) -> Vec<PlanView> {
+    let mut out = vec![PlanView {
+        id: "top".into(),
+        name: "Whole drawing".into(),
+        basis: Some(Basis::TOP),
+        window: None,
+    }];
+    for v in doc.views().into_iter().take(500) {
+        let name = v.name.trim().to_string();
+        if name.is_empty() || v.paper_space {
+            continue;
+        }
+        let d = v.direction;
+        let plan_view = d[2] > 0.0 && (d[0].hypot(d[1]) / d[2]).abs() < 1e-6;
+        if !plan_view {
+            notes.push(format!(
+                "the named view \"{name}\" doesn't look straight down, so it isn't offered"
+            ));
+            continue;
+        }
+        if v.twist.abs() > 1e-9 {
+            notes.push(format!(
+                "the named view \"{name}\" is twisted; its frame is used without the twist"
+            ));
+        }
+        let (cx, cy) = (v.target[0] + v.center[0], v.target[1] + v.center[1]);
+        let (w, h) = (v.width, v.height);
+        let window = [cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0].map(|x| x * scale);
+        if window.iter().all(|x| x.is_finite()) && w > 0.0 && h > 0.0 {
+            out.push(PlanView {
+                id: format!("view:{name}"),
+                name,
+                basis: Some(Basis::TOP),
+                window: Some(window),
+            });
+        }
+    }
+    out
 }
 
 impl Reader<'_> {

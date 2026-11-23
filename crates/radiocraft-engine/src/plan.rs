@@ -62,6 +62,8 @@ pub struct FloorPlan {
     pub shapes: Vec<PlanShape>,
     /// What was left out or approximated while reading.
     pub notes: Vec<String>,
+    /// The viewpoints it offers: a model's standard and saved views, a drawing's named views.
+    pub views: Vec<crate::viewpoint::PlanView>,
 }
 
 /// How wide a drawn line counts, by its material (mm): a pane of glass, a door leaf, a wall.

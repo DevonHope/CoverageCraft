@@ -33,12 +33,14 @@ pub enum Up {
     Y,
 }
 
-/// The floor plan a mesh file's bytes give, cut at `height` (mm).
+/// The floor plan a mesh file's bytes give, seen along `view` and cut at `height` (mm) toward
+/// the viewer (from the top: the height above the floor).
 pub fn read_mesh(
     bytes: &[u8],
     path: &str,
     height: f64,
     up: Up,
+    view: &crate::viewpoint::Basis,
 ) -> Result<FloorPlan, MeshImportError> {
     let lower = path.to_ascii_lowercase();
     let limits = Limits::default();
@@ -56,6 +58,7 @@ pub fn read_mesh(
         ..FloorPlan::default()
     };
     plan.notes.extend(scene.warnings.iter().take(20).cloned());
+    plan.views = crate::viewpoint::model_views();
     for (index, mesh) in scene.meshes.iter().enumerate() {
         let name = if mesh.name.trim().is_empty() {
             format!("Object {}", index + 1)
@@ -73,15 +76,19 @@ pub fn read_mesh(
             .filter(|n| !n.is_empty())
             .collect();
         let hints: Vec<&str> = materials.iter().map(String::as_str).collect();
-        // Planar coordinates and height of each vertex, by the file's up axis.
+        // Each vertex in the world (Z up, whatever the file's up axis), then in the view: map x,
+        // map y and depth toward the viewer.
         // The mesh's own position pool: corners that share a position share a vertex, whatever
         // their normals, so neighbouring triangles share edges and the cut joins into rings.
         let points: Vec<[f64; 3]> = mesh
             .positions
             .iter()
-            .map(|p| match up {
-                Up::Z => [p[0], p[1], p[2]],
-                Up::Y => [p[0], -p[2], p[1]],
+            .map(|p| {
+                let world = match up {
+                    Up::Z => [p[0], p[1], p[2]],
+                    Up::Y => [p[0], -p[2], p[1]],
+                };
+                view.to_view(world)
             })
             .collect();
         let triangles: Vec<[u32; 3]> = mesh

@@ -13,6 +13,7 @@ use crate::model::{self, Cell, Emitter, Grid, Model, Scratch, WallMap};
 use crate::plan::{FloorPlan, SourceKind};
 use crate::radio::{Channel, HEARD_DBM, View, default_width, link_rate};
 use crate::survey::{self, Point};
+use crate::viewpoint::{Basis, PlanView};
 use crate::views::{self, Derived, LegendRow};
 
 /// The largest plan or project file read, in bytes.
@@ -87,6 +88,9 @@ pub struct Settings {
     pub client_streams: u8,
     /// Added to every signal in each band (dB): a calibration to measurements.
     pub offset_db: [f64; 3],
+    /// Which way the plan is looked at: `top`, `front`… or `view:<name>` (a model's saved view,
+    /// a drawing's named view).
+    pub viewpoint: String,
 }
 
 impl Default for Settings {
@@ -103,6 +107,7 @@ impl Default for Settings {
             view: View::Signal,
             client_streams: 2,
             offset_db: [0.0; 3],
+            viewpoint: "top".into(),
         }
     }
 }
@@ -156,6 +161,13 @@ pub struct Engine {
     devices_file: Option<String>,
     /// Measured points.
     survey: Vec<Point>,
+    /// The last SolidCraft design exported: its path, modification time, size and export.
+    sc_cache: Option<(
+        String,
+        Option<std::time::SystemTime>,
+        u64,
+        Arc<crate::sc::Converted>,
+    )>,
     walls: Option<Arc<WallMap>>,
     field: Option<Arc<Field>>,
     coverage: Option<Arc<Coverage>>,
@@ -173,6 +185,7 @@ impl Default for Engine {
             devices: devices::generic(),
             devices_file: None,
             survey: Vec::new(),
+            sc_cache: None,
             walls: None,
             field: None,
             coverage: None,
@@ -211,7 +224,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "plan.open",
-        "{path, slice_height?, up?: z|y} → read a DXF plan or cut an OBJ/STL model",
+        "{path, slice_height?, up?: z|y, viewpoint?} → read a DXF plan (CADCraft), cut an OBJ/STL model or a SolidCraft design (.sc, through SolidCraft's solidcraft-cli) along the viewpoint",
     ),
     (
         "project.open",
@@ -259,7 +272,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "settings.set",
-        "{band?: 2.4|5|6, view?: signal|second|serving|overlap|rate|leakage, client_streams?: 1-4, offset_db?: {band: dB}, grid_step?, client_height?, exponent?, slice_height?, cap_eirp?, close_gaps?, up?}",
+        "{band?: 2.4|5|6, view?: signal|second|serving|overlap|rate|leakage, viewpoint?: top|bottom|front|back|left|right|view:<name> (plan.info lists the plan's), client_streams?: 1-4, offset_db?: {band: dB}, grid_step?, client_height?, exponent?, slice_height?, cap_eirp?, close_gaps?, up?}",
     ),
 ];
 
@@ -514,6 +527,9 @@ impl Engine {
                 _ => return Err(bad(command, "`up` is z or y")),
             };
         }
+        if let Some(v) = p.get("viewpoint").and_then(Value::as_str) {
+            self.settings.viewpoint = v.trim().to_string();
+        }
         let plan = self.read_plan(command, &path)?;
         // Keep the materials of sources the new plan still has.
         let mut plan = plan;
@@ -533,20 +549,104 @@ impl Engine {
         self.plan_info(command)
     }
 
-    fn read_plan(&self, command: &str, path: &str) -> Result<FloorPlan> {
-        let bytes = read_file(command, path)?;
+    fn read_plan(&mut self, command: &str, path: &str) -> Result<FloorPlan> {
         let lower = path.to_ascii_lowercase();
-        if lower.ends_with(".dxf") {
-            read_dxf(&bytes, path).map_err(|e| bad(command, format!("{path}: {e}")))
-        } else if lower.ends_with(".obj") || lower.ends_with(".stl") {
-            read_mesh(&bytes, path, self.settings.slice_height, self.settings.up)
-                .map_err(|e| bad(command, format!("{path}: {e}")))
+        let wanted = self.settings.viewpoint.clone();
+        // The viewpoint asked for, among those the file offers; the top when it has none such.
+        let pick = |views: &[PlanView]| -> (String, Basis) {
+            views
+                .iter()
+                .find(|v| v.id == wanted)
+                .or_else(|| views.iter().find(|v| v.id == "top"))
+                .map_or(("top".to_string(), Basis::TOP), |v| {
+                    (v.id.clone(), v.basis.unwrap_or(Basis::TOP))
+                })
+        };
+        let mut plan = if lower.ends_with(".sc") {
+            let converted = self.sc_converted(command, path)?;
+            let mut views = crate::viewpoint::model_views();
+            views.extend(converted.views.iter().cloned());
+            let (_, basis) = pick(&views);
+            let mut plan = read_mesh(
+                &converted.obj,
+                "design.obj",
+                self.settings.slice_height,
+                Up::Z,
+                &basis,
+            )
+            .map_err(|e| bad(command, format!("{path}: {e}")))?;
+            plan.path = path.to_string();
+            plan.views = views;
+            plan.notes.extend(converted.notes.iter().cloned());
+            plan
         } else {
-            Err(bad(
-                command,
-                format!("{path}: RadioCraft reads DXF plans and OBJ or STL models"),
-            ))
+            let bytes = read_file(command, path)?;
+            if lower.ends_with(".dxf") {
+                read_dxf(&bytes, path).map_err(|e| bad(command, format!("{path}: {e}")))?
+            } else if lower.ends_with(".obj") || lower.ends_with(".stl") {
+                let (_, basis) = pick(&crate::viewpoint::model_views());
+                read_mesh(
+                    &bytes,
+                    path,
+                    self.settings.slice_height,
+                    self.settings.up,
+                    &basis,
+                )
+                .map_err(|e| bad(command, format!("{path}: {e}")))?
+            } else {
+                return Err(bad(
+                    command,
+                    format!(
+                        "{path}: RadioCraft reads DXF plans (CADCraft), OBJ or STL models, and SolidCraft designs (.sc)"
+                    ),
+                ));
+            }
+        };
+        let (id, _) = pick(&plan.views);
+        if id != wanted {
+            plan.notes.push(format!(
+                "this plan has no viewpoint `{wanted}`; it is seen from the top"
+            ));
         }
+        self.settings.viewpoint = id;
+        Ok(plan)
+    }
+
+    /// A SolidCraft design exported by SolidCraft, once per version of the file.
+    fn sc_converted(&mut self, command: &str, path: &str) -> Result<Arc<crate::sc::Converted>> {
+        let meta = std::fs::metadata(path).map_err(|e| bad(command, format!("{path}: {e}")))?;
+        if !meta.is_file() {
+            return Err(bad(command, format!("{path}: not a file")));
+        }
+        let (mtime, len) = (meta.modified().ok(), meta.len());
+        if let Some((p, m, l, c)) = &self.sc_cache
+            && p == path
+            && *m == mtime
+            && *l == len
+        {
+            return Ok(c.clone());
+        }
+        let converted = Arc::new(
+            crate::sc::convert(std::path::Path::new(path))
+                .map_err(|e| bad(command, format!("{path}: {e}")))?,
+        );
+        self.sc_cache = Some((path.to_string(), mtime, len, converted.clone()));
+        Ok(converted)
+    }
+
+    /// Whether the open plan is a model (cut along the viewpoint) rather than a drawing.
+    fn plan_is_model(&self) -> bool {
+        self.plan.as_ref().is_some_and(|p| {
+            let l = p.path.to_ascii_lowercase();
+            l.ends_with(".obj") || l.ends_with(".stl") || l.ends_with(".sc")
+        })
+    }
+
+    /// The open plan's viewpoint.
+    fn plan_view(&self) -> Option<&PlanView> {
+        self.plan
+            .as_ref()
+            .and_then(|p| p.views.iter().find(|v| v.id == self.settings.viewpoint))
     }
 
     fn plan_info(&self, command: &str) -> Result<Value> {
@@ -566,6 +666,8 @@ impl Engine {
             "bounds": plan.bounds(),
             "notes": plan.notes,
             "presets": RF_PRESETS.iter().map(|p| p.id).collect::<Vec<_>>(),
+            "viewpoints": plan.views.iter().map(PlanView::to_json).collect::<Vec<_>>(),
+            "viewpoint": self.settings.viewpoint,
         }))
     }
 
@@ -903,8 +1005,34 @@ impl Engine {
                 _ => return Err(bad(command, "`up` is z or y")),
             };
         }
+        if let Some(v) = p.get("viewpoint").filter(|v| !v.is_null()) {
+            let id = v.as_str().map(str::trim).unwrap_or_default().to_string();
+            let known = match &self.plan {
+                Some(plan) => plan.views.iter().any(|w| w.id == id),
+                None => Basis::standard(&id).is_some() || id.starts_with("view:"),
+            };
+            if !known {
+                return Err(bad(
+                    command,
+                    format!("no viewpoint `{id}` (plan.info lists the plan's viewpoints)"),
+                ));
+            }
+            s.viewpoint = id;
+        }
         let new_slice = ranged(command, p, "slice_height", -MAX_COORD, MAX_COORD)?;
-        let recut = new_slice.is_some_and(|h| h != s.slice_height) || s.up != self.settings.up;
+        let new_view = s.viewpoint != self.settings.viewpoint;
+        let recut =
+            new_slice.is_some_and(|h| h != s.slice_height) || s.up != self.settings.up || new_view;
+        // Routers stay where they are in the building when a model is seen from another side.
+        let moved_view = (new_view && self.plan_is_model()).then(|| {
+            let views = self
+                .plan
+                .as_ref()
+                .map(|p| p.views.clone())
+                .unwrap_or_default();
+            let basis = |id: &str| views.iter().find(|v| v.id == id).and_then(|v| v.basis);
+            (basis(&self.settings.viewpoint), basis(&s.viewpoint))
+        });
         if let Some(h) = new_slice {
             s.slice_height = h;
         }
@@ -919,15 +1047,29 @@ impl Engine {
             self.coverage = None;
             return Ok(self.settings_json());
         }
-        // A model is cut again at the new height; a DXF plan has no height.
-        if recut && let Some(path) = self.plan.as_ref().map(|p| p.path.clone()) {
-            let lower = path.to_ascii_lowercase();
-            if lower.ends_with(".obj") || lower.ends_with(".stl") {
-                self.plan_open(command, &json!({"path": path}))?;
+        // A model is cut again at the new height or from the new side; a drawing has no height,
+        // and its named views only frame it.
+        if recut
+            && self.plan_is_model()
+            && let Some(path) = self.plan.as_ref().map(|p| p.path.clone())
+        {
+            self.plan_open(command, &json!({"path": path}))?;
+        }
+        if let Some((Some(from), Some(to))) = moved_view {
+            for r in &mut self.routers {
+                let v = to.to_view(from.to_world([r.at[0], r.at[1], r.height]));
+                r.at = [v[0], v[1]];
+                r.height = v[2];
             }
         }
         self.changed(true);
-        Ok(self.settings_json())
+        let mut out = self.settings_json();
+        if new_view && !self.survey.is_empty() && self.settings.viewpoint != "top" {
+            out["note"] = json!(
+                "measured points are positions on the floor plan; they don't follow a side view"
+            );
+        }
+        Ok(out)
     }
 
     fn settings_json(&self) -> Value {
@@ -937,6 +1079,7 @@ impl Engine {
             "view": s.view.id(),
             "client_streams": s.client_streams,
             "offset_db": band_map(&s.offset_db.map(Some)),
+            "viewpoint": s.viewpoint,
             "grid_step": s.grid_step,
             "client_height": s.client_height,
             "exponent": s.exponent,
@@ -984,7 +1127,12 @@ impl Engine {
             return Some(f.clone());
         }
         let walls = self.walls()?;
-        let bounds = walls.bounds()?;
+        // A drawing's named view frames part of it: the map covers that part (the walls outside
+        // it still count on the way).
+        let bounds = match self.plan_view().and_then(|v| v.window) {
+            Some(w) => w,
+            None => walls.bounds()?,
+        };
         let s = self.settings.clone();
         let margin = 0.5 * s.close_gaps + 2.0 * s.grid_step;
         let grid = Grid::covering(

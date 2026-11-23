@@ -3,7 +3,7 @@
 //! - `radiocraft-cli commands`: list the commands.
 //! - `radiocraft-cli exec <command> [json]`: run one command on an empty session.
 //! - `radiocraft-cli script <script.json>`: run `{"commands": [{"command", "params"}...]}` in order.
-//! - `radiocraft-cli plan <plan.dxf|.obj|.stl> [options]`: open a plan, place routers, report.
+//! - `radiocraft-cli plan <plan.dxf|.obj|.stl|.sc> [options]`: open a plan, place routers, report.
 
 use std::process::ExitCode;
 
@@ -14,8 +14,8 @@ const USAGE: &str = "usage:
   radiocraft-cli commands
   radiocraft-cli exec <command> [json-params]
   radiocraft-cli script <script.json>
-  radiocraft-cli plan <plan.dxf|.obj|.stl> [--router x,y[,height]]... [--device id | --eirp dBm] [--devices file.json]
-                      [--band 2.4|5|6] [--slice mm] [--material source=material]... [--png out.png] [--save project.rcraft]";
+  radiocraft-cli plan <plan.dxf|.obj|.stl|.sc> [--router x,y[,height]]... [--device id | --eirp dBm] [--devices file.json]
+                      [--band 2.4|5|6] [--slice mm] [--viewpoint top|front|…|view:<name>] [--material source=material]... [--png out.png] [--save project.rcraft]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -113,6 +113,9 @@ fn plan(engine: &mut Engine, args: &[String]) -> Result<Value, String> {
             "--band" => {
                 settings.insert("band".into(), json!(value));
             }
+            "--viewpoint" => {
+                settings.insert("viewpoint".into(), json!(value));
+            }
             "--slice" => {
                 settings.insert(
                     "slice_height".into(),
@@ -130,11 +133,14 @@ fn plan(engine: &mut Engine, args: &[String]) -> Result<Value, String> {
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
     }
-    // The slice height comes first: a model is cut when it opens.
-    if let Some(h) = settings.get("slice_height").cloned() {
-        exec(engine, "settings.set", json!({"slice_height": h}))?;
+    // The slice height and viewpoint come first: a model is cut when it opens.
+    let mut open = json!({"path": path});
+    for key in ["slice_height", "viewpoint"] {
+        if let Some(v) = settings.remove(key) {
+            open[key] = v;
+        }
     }
-    let info = exec(engine, "plan.open", json!({"path": path}))?;
+    let info = exec(engine, "plan.open", open)?;
     exec(engine, "settings.set", Value::Object(settings))?;
     for (source, material) in &materials {
         let m: Value = serde_json::from_str(material).unwrap_or_else(|_| json!(material));

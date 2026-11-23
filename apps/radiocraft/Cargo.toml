@@ -12,6 +12,8 @@ eframe = { version = "0.37", default-features = false, features = ["glow", "defa
 egui = "0.37"
 rfd = "0.15"
 png = { workspace = true }
+craft-window = { workspace = true }
+craft-menu = { workspace = true }
 
 [lints]
 workspace = true

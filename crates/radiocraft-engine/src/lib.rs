@@ -15,7 +15,9 @@ pub mod placement;
 pub mod plan;
 pub mod radio;
 pub mod report;
+pub mod sc;
 pub mod survey;
+pub mod viewpoint;
 pub mod views;
 
 pub use engine::{COMMANDS, Coverage, Engine, EngineError, Field, Power, Router, Settings};

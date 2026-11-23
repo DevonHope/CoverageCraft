@@ -511,6 +511,154 @@ fn calibration_finds_a_known_model() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A model seen from the front is cut across its depth, and a router stays where it is in the
+/// building when the viewpoint changes.
+#[test]
+fn a_model_can_be_seen_from_the_front() {
+    let dir = std::env::temp_dir().join(format!("radiocraft-front-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("room.obj");
+    std::fs::write(&path, solidcraft_obj()).unwrap();
+    let mut e = Engine::new();
+    let info = run(
+        &mut e,
+        "plan.open",
+        json!({"path": path.to_string_lossy(), "slice_height": 1000}),
+    );
+    assert_eq!(info["viewpoint"], "top");
+    assert_eq!(
+        info["viewpoints"].as_array().map(Vec::len),
+        Some(6),
+        "{info}"
+    );
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [1000, 1500], "height": 1200, "eirp_dbm": 20}),
+    );
+    // From the front the map is x across and z up, and the cut is 1.5 m into the room
+    // (toward the viewer is −y, so the cut's depth is −1500).
+    run(
+        &mut e,
+        "settings.set",
+        json!({"viewpoint": "front", "slice_height": -1500}),
+    );
+    let front = run(&mut e, "plan.info", json!({}));
+    assert_eq!(front["viewpoint"], "front");
+    // The side walls are cut; the front and back walls lie in front of and behind the cut.
+    assert_eq!(source(&front, "Wall W")["shapes"], 1, "{front}");
+    assert!(
+        front["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["name"] != "Wall S"),
+        "{front}"
+    );
+    let routers = run(&mut e, "router.list", json!({}));
+    assert_eq!(routers[0]["at"], json!([1000.0, 1200.0]), "{routers}");
+    assert_eq!(routers[0]["height"], -1500.0);
+    // And back.
+    run(
+        &mut e,
+        "settings.set",
+        json!({"viewpoint": "top", "slice_height": 1000}),
+    );
+    let routers = run(&mut e, "router.list", json!({}));
+    assert_eq!(routers[0]["at"], json!([1000.0, 1500.0]), "{routers}");
+    assert!(
+        e.execute("settings.set", &json!({"viewpoint": "sideways"}))
+            .is_err()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A drawing's named view frames part of it: the map covers that window.
+#[test]
+fn a_named_view_frames_the_map() {
+    let dxf = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nVIEW\n70\n1\n\
+0\nVIEW\n2\nLeft room\n70\n0\n40\n4000\n41\n3000\n10\n1500\n20\n2000\n11\n0\n21\n0\n31\n1\n12\n0\n22\n0\n32\n0\n50\n0\n\
+0\nENDTAB\n0\nENDSEC\n\
+0\nSECTION\n2\nENTITIES\n\
+0\nLWPOLYLINE\n8\nA-WALL\n90\n4\n70\n1\n10\n0\n20\n0\n10\n8000\n20\n0\n10\n8000\n20\n4000\n10\n0\n20\n4000\n\
+0\nLWPOLYLINE\n8\nA-WALL\n90\n4\n70\n1\n10\n150\n20\n150\n10\n7850\n20\n150\n10\n7850\n20\n3850\n10\n150\n20\n3850\n\
+0\nENDSEC\n0\nEOF\n";
+    let dir = std::env::temp_dir().join(format!("radiocraft-view-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("plan.dxf");
+    std::fs::write(&path, dxf).unwrap();
+    let mut e = Engine::new();
+    let info = run(&mut e, "plan.open", json!({"path": path.to_string_lossy()}));
+    let ids: Vec<&str> = info["viewpoints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec!["top", "view:Left room"], "{info}");
+    assert_eq!(
+        info["viewpoints"][1]["window"],
+        json!([0.0, 0.0, 3000.0, 4000.0])
+    );
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [1500, 2000], "height": 2400}),
+    );
+    let whole = run(&mut e, "coverage.compute", json!({}));
+    run(
+        &mut e,
+        "settings.set",
+        json!({"viewpoint": "view:Left room"}),
+    );
+    let framed = run(&mut e, "coverage.compute", json!({}));
+    // The map covers the 3 m × 4 m window, not the 8 m × 4 m drawing.
+    let cols = |c: &Value| c["grid"]["columns"].as_u64().unwrap();
+    assert!(cols(&framed) < cols(&whole), "{whole} {framed}");
+    assert!(framed["floor_m2"].as_f64().unwrap() < whole["floor_m2"].as_f64().unwrap());
+    // A drawing has no side views.
+    assert!(
+        e.execute("settings.set", &json!({"viewpoint": "front"}))
+            .is_err()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A SolidCraft design opens through SolidCraft's own exporter, with its saved views; without
+/// SolidCraft installed the test says so and passes.
+#[test]
+fn a_solidcraft_design_opens() {
+    if radiocraft_engine::sc::find_cli().is_none() {
+        eprintln!("SolidCraft isn't installed here (no solidcraft-cli): skipped");
+        return;
+    }
+    let mut e = Engine::new();
+    let info = run(
+        &mut e,
+        "plan.open",
+        json!({"path": fixture("solidcraft-demo.sc"), "slice_height": 1000}),
+    );
+    assert_eq!(source(&info, "Wall S")["shapes"], 1, "{info}");
+    assert_eq!(source(&info, "Partition A")["shapes"], 1, "{info}");
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [2000, 2000], "height": 2400, "device": "generic-ceiling-ap"}),
+    );
+    let c = run(&mut e, "coverage.compute", json!({}));
+    assert_eq!(c["floor"], "enclosed", "{c}");
+    // Seen from the front, the same design opens from the cache (no second export).
+    let started = std::time::Instant::now();
+    run(
+        &mut e,
+        "settings.set",
+        json!({"viewpoint": "front", "slice_height": -3500}),
+    );
+    assert!(started.elapsed().as_secs_f64() < 5.0);
+    assert_eq!(run(&mut e, "plan.info", json!({}))["viewpoint"], "front");
+}
+
 /// A project saved before channels and maps existed opens, with them unset.
 #[test]
 fn an_older_project_opens() {
