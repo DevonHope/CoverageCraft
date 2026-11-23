@@ -11,9 +11,12 @@ how this repository applies it.
   `plan.rs`), materials (`materials.rs`), the signal model (`model.rs`), channels and link rate
   (`radio.rs`), the maps (`views.rs`), spot suggestions (`placement.rs`), measured points and
   calibration (`survey.rs`), devices (`devices.rs`), the commands (`engine.rs`), PNG export
-  (`picture.rs`) and the HTML report (`report.rs`). No egui here.
+  (`picture.rs`), the HTML report (`report.rs`), viewpoints (`viewpoint.rs`), SolidCraft designs
+  through `solidcraft-cli` (`sc.rs`) and DWG through acadrust (`dwg.rs`). No egui here.
 - `apps/radiocraft`: the egui window. It only calls `Engine::execute` and reads the engine's
-  state; a feature that exists only in the window is a bug.
+  state; a feature that exists only in the window is a bug. `header.rs` is the Craft header
+  (craft-window's title bar, craft-menu's menus, toolbar, status bar, Home): every menu item is a
+  command id run by `App::menu_command`.
 - `apps/radiocraft-cli`: the same commands without a window, plus scripts.
 - Tests: unit tests beside the code (`*_tests.rs` or `mod tests`); integration tests in
   `crates/radiocraft-engine/tests/it/main.rs`, one binary. Fixtures in `tests/fixtures/`, each

@@ -1060,7 +1060,7 @@ impl Engine {
             view: self.settings.view,
             ..s.clone()
         } == self.settings;
-        self.settings = s;
+        let before = std::mem::replace(&mut self.settings, s);
         if only_view {
             self.revision = self.revision.wrapping_add(1);
             self.coverage = None;
@@ -1072,7 +1072,12 @@ impl Engine {
             && self.plan_is_model()
             && let Some(path) = self.plan.as_ref().map(|p| p.path.clone())
         {
-            self.plan_open(command, &json!({"path": path}))?;
+            // A cut that fails (the design can't be exported now) leaves everything as it was.
+            if let Err(e) = self.plan_open(command, &json!({"path": path})) {
+                self.settings = before;
+                self.changed(true);
+                return Err(e);
+            }
         }
         if let Some((Some(from), Some(to))) = moved_view {
             for r in &mut self.routers {
@@ -1122,9 +1127,15 @@ impl Engine {
     }
 
     fn model(&self) -> Model {
+        // From a side, the map's points lie on the cut: the receiver is at the cut's depth.
+        let side = self.plan_is_model() && self.settings.viewpoint != "top";
         Model {
             exponent: self.settings.exponent,
-            client_height: self.settings.client_height,
+            client_height: if side {
+                self.settings.slice_height
+            } else {
+                self.settings.client_height
+            },
             offset_db: self.settings.offset_db,
         }
     }

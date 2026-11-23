@@ -148,6 +148,16 @@ real signal is often a few dB either side. Use it to compare placements, then ch
 
 ## Status
 
+Known limits:
+
+- A SolidCraft design opens through the installed SolidCraft, on the window's thread: a large
+  design keeps the window busy while SolidCraft exports it. An installed SolidCraft older than
+  the build that saved the design may read it with warnings (they show in the plan's notes);
+  `RADIOCRAFT_SOLIDCRAFT_CLI` can point at another build's `solidcraft-cli`.
+- Saved SolidCraft views are read when they are Z-up; a DXF's named views are used when they
+  look straight down in model space (twist ignored; paper-space views and layouts aren't offered).
+- The header uses the system title bar on Windows and Linux for now; there is no undo yet.
+
 Beta. Working: DXF and OBJ/STL plans, materials, routers, devices, channels, the three bands,
 six maps and their figures, the probe, spot suggestions, measured points and calibration, HTML
 reports, projects, PNG export, the CLI and scripts. Not yet: several floors, antenna patterns,

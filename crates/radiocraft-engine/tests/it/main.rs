@@ -558,6 +558,31 @@ fn a_model_can_be_seen_from_the_front() {
     let routers = run(&mut e, "router.list", json!({}));
     assert_eq!(routers[0]["at"], json!([1000.0, 1200.0]), "{routers}");
     assert_eq!(routers[0]["height"], -1500.0);
+    // A project keeps the viewpoint: it opens seen from the front again, the router in place.
+    let project = dir.join("front.rcraft");
+    run(
+        &mut e,
+        "project.save",
+        json!({"path": project.to_string_lossy()}),
+    );
+    let mut again = Engine::new();
+    run(
+        &mut again,
+        "project.open",
+        json!({"path": project.to_string_lossy()}),
+    );
+    assert_eq!(
+        run(&mut again, "plan.info", json!({}))["viewpoint"],
+        "front"
+    );
+    assert_eq!(
+        run(&mut again, "router.list", json!({}))[0]["at"],
+        json!([1000.0, 1200.0])
+    );
+    // The map's points lie on the cut, as the router does: 2 m straight above it, with no wall
+    // between, the signal is free space over 2 m: 20 − 47.257 − 22·log10(2) = −33.88 dBm.
+    let above = run(&mut e, "coverage.at", json!({"at": [1000, 3200]}));
+    assert_eq!(above["bands"]["5"]["rssi_dbm"], -33.9, "{above}");
     // And back.
     run(
         &mut e,
@@ -648,6 +673,53 @@ fn a_solidcraft_design_opens() {
     );
     let c = run(&mut e, "coverage.compute", json!({}));
     assert_eq!(c["floor"], "enclosed", "{c}");
+    // A view saved in the design (by SolidCraft itself, in a temporary copy) is offered, and
+    // picking it cuts the design along it: this one looks from the street side, like Front.
+    let dir = std::env::temp_dir().join(format!("radiocraft-scview-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("save-view.json");
+    std::fs::write(
+        &script,
+        json!({"commands": [{"command": "view.save", "params": {"name": "Street side",
+            "camera": {"target": [5000, 3500, 1200], "yaw": 0.0, "pitch": 0.0, "distance": 20000}}}]})
+        .to_string(),
+    )
+    .unwrap();
+    let copy = dir.join("with-view.sc");
+    let status = std::process::Command::new(radiocraft_engine::sc::find_cli().unwrap())
+        .arg("run")
+        .arg(&script)
+        .arg("--in")
+        .arg(fixture("solidcraft-demo.sc"))
+        .arg("--save")
+        .arg(&copy)
+        .arg("--quiet")
+        .env("SOLIDCRAFT_SETTINGS_DIR", dir.join("settings"))
+        .env("SOLIDCRAFT_RECOVERY_DIR", dir.join("recovery"))
+        .env("SOLIDCRAFT_CONTROL_DIR", dir.join("control"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let mut v = Engine::new();
+    let info = run(&mut v, "plan.open", json!({"path": copy.to_string_lossy()}));
+    let ids: Vec<&str> = info["viewpoints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|x| x["id"].as_str())
+        .collect();
+    assert!(ids.contains(&"view:Street side"), "{ids:?}");
+    run(
+        &mut v,
+        "settings.set",
+        json!({"viewpoint": "view:Street side", "slice_height": -3500}),
+    );
+    let side = run(&mut v, "plan.info", json!({}));
+    assert_eq!(side["viewpoint"], "view:Street side");
+    assert_eq!(source(&side, "Wall W")["shapes"], 1, "{side}");
+    let _ = std::fs::remove_dir_all(&dir);
     // Seen from the front, the same design opens from the cache (no second export).
     let started = std::time::Instant::now();
     run(
