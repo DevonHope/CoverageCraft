@@ -215,6 +215,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "{path} → save the project: the plan's path, materials, routers and settings",
     ),
     (
+        "report.export",
+        "{path: *.html, title?, notes?} → a self-contained HTML report: every band's figures and maps, the routers, the walls and the settings",
+    ),
+    (
         "router.add",
         "{at: [x, y], height?, name?, device? | eirp_dbm?: dBm | {\"2.4\",\"5\",\"6\"}, channels?: {\"2.4\": 6, \"5\": {channel: 36, width: 80}, ...}} → {id}",
     ),
@@ -439,6 +443,7 @@ impl Engine {
             "export.png" => self.export_png(command, p),
             "project.save" => self.project_save(command, p),
             "project.open" => self.project_open(command, p),
+            "report.export" => self.report_export(command, p),
             other => Err(EngineError::Unknown(other.to_string())),
         }
     }
@@ -1145,6 +1150,228 @@ impl Engine {
         let bytes = crate::picture::png(&c, &emitters).map_err(|e| bad(command, e))?;
         std::fs::write(path, bytes).map_err(|e| bad(command, format!("{path}: {e}")))?;
         Ok(json!({"path": path}))
+    }
+
+    fn report_export(&mut self, command: &str, p: &Value) -> Result<Value> {
+        let path = p
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| bad(command, "`path` is where the report goes"))?
+            .to_string();
+        let lower = path.to_ascii_lowercase();
+        if !(lower.ends_with(".html") || lower.ends_with(".htm")) {
+            return Err(bad(command, "`path` must end in .html"));
+        }
+        let text = |k: &str| {
+            p.get(k)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(|t| t.chars().take(20_000).collect::<String>())
+        };
+        let plan = self
+            .plan
+            .as_ref()
+            .ok_or_else(|| bad(command, "no plan is open (plan.open)"))?;
+        // Only the file's name: a report is often shared, and folders say who made it.
+        let plan_name = std::path::Path::new(&plan.path)
+            .file_name()
+            .map_or_else(|| plan.path.clone(), |n| n.to_string_lossy().to_string());
+        let counts = plan.shape_counts();
+        let materials: Vec<[String; 3]> = plan
+            .sources
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| counts.get(i).copied().unwrap_or(0) > 0)
+            .map(|(_, s)| {
+                let m = match &s.material {
+                    Material::Auto => "Guessed from thickness".to_string(),
+                    Material::Ignore => "Not a wall".to_string(),
+                    Material::Preset(id) => id.to_string(),
+                    Material::Custom(l) => format!("{:?} dB", l.0),
+                };
+                [s.name.clone(), s.kind.name().to_string(), m]
+            })
+            .collect();
+        let m = |mm: f64| format!("{:.2}", mm / 1000.0);
+        let routers: Vec<[String; 6]> = self
+            .routers
+            .iter()
+            .map(|r| {
+                let device = match &r.power {
+                    Power::Device(id) => self
+                        .devices
+                        .iter()
+                        .find(|d| d.id == *id)
+                        .map_or_else(|| id.clone(), |d| d.name.clone()),
+                    Power::Eirp(_) => "Typed power".to_string(),
+                };
+                let eirp = self.eirp(r);
+                let per_band = |f: &dyn Fn(Band) -> Option<String>| {
+                    Band::ALL
+                        .iter()
+                        .filter_map(|b| f(*b).map(|v| format!("{} GHz {v}", b.name())))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                [
+                    r.name.clone(),
+                    format!("{}, {}", m(r.at[0]), m(r.at[1])),
+                    m(r.height),
+                    device,
+                    per_band(&|b| {
+                        eirp.get(b.index())
+                            .copied()
+                            .flatten()
+                            .map(|v| format!("{v:.1} dBm"))
+                    }),
+                    per_band(&|b| {
+                        r.channels
+                            .get(b.index())
+                            .copied()
+                            .flatten()
+                            .map(|c| format!("{} ({} MHz)", c.number, c.width))
+                    }),
+                ]
+            })
+            .collect();
+        let saved = self.settings.clone();
+        let emitters = self.emitters();
+        let mut bands = Vec::new();
+        for band in Band::ALL {
+            if !emitters.iter().any(|e| e.eirp(band).is_some()) {
+                continue;
+            }
+            self.settings.band = band;
+            self.settings.view = View::Signal;
+            self.changed(false);
+            // The leakage figure (and its map) come last: they need the wider grid, and the other
+            // maps are drawn on the usual one.
+            let figures = match self.coverage_compute(command, &json!({})) {
+                Ok(f) => f,
+                Err(e) => {
+                    self.settings = saved;
+                    self.changed(false);
+                    return Err(e);
+                }
+            };
+            let pct = |k: &str| figures[k].as_f64().map(|v| format!("{v:.0}%"));
+            let dbm = |k: &str| figures[k].as_f64().map(|v| format!("{v:.0} dBm"));
+            let mut rows: Vec<(String, String)> = [
+                (
+                    "Floor",
+                    figures["floor_m2"].as_f64().map(|v| format!("{v:.1} m²")),
+                ),
+                ("−60 dBm or better (fast)", pct("pct_at_least_60")),
+                ("−67 dBm or better (video calls)", pct("pct_at_least_67")),
+                ("Weakest 5%", dbm("p5_dbm")),
+                ("Median", dbm("median_dbm")),
+                (
+                    "Roaming: a second router at −67 dBm or better",
+                    pct("pct_second_at_least_67"),
+                ),
+                (
+                    "Median link rate",
+                    figures["median_rate_mbps"]
+                        .as_f64()
+                        .map(|v| format!("{v:.0} Mbit/s")),
+                ),
+                (
+                    "No overlapping channel heard",
+                    pct("pct_no_channel_overlap"),
+                ),
+            ]
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|v| (k.to_string(), v)))
+            .collect();
+            let several = self.routers.len() > 1;
+            let channels = self
+                .routers
+                .iter()
+                .any(|r| r.channels.get(band.index()).copied().flatten().is_some());
+            let mut maps = Vec::new();
+            for view in View::ALL {
+                let wanted = match view {
+                    View::Second | View::Serving => several,
+                    View::Overlap => channels,
+                    View::Leakage => figures["floor"] == "enclosed",
+                    View::Signal | View::Rate => true,
+                };
+                if !wanted {
+                    continue;
+                }
+                self.settings.view = view;
+                self.coverage = None;
+                if view == View::Leakage
+                    && let Ok(f) = self.coverage_compute(command, &json!({"leakage": true}))
+                    && let Some(v) = f["leakage"]["m2_at_least_67"].as_f64()
+                {
+                    rows.push((
+                        "Outside the walls (within 3 m) at −67 dBm or better".to_string(),
+                        format!("{v:.1} m²"),
+                    ));
+                }
+                let Some(c) = self.coverage() else { continue };
+                let png = match crate::picture::png(&c, &emitters) {
+                    Ok(png) => png,
+                    Err(e) => {
+                        self.settings = saved;
+                        self.changed(false);
+                        return Err(bad(command, e));
+                    }
+                };
+                maps.push(crate::report::Map {
+                    title: view.label().to_string(),
+                    png,
+                    key_note: match view {
+                        View::Serving | View::Overlap => "Share of the floor".to_string(),
+                        View::Leakage => "Share of the area within 3 m outside the walls, at each level or better".to_string(),
+                        View::Rate => "Share of the floor at each rate or better; the most the signal allows with nothing else on the air".to_string(),
+                        _ => "Share of the floor at each level or better".to_string(),
+                    },
+                    legend: c.legend.clone(),
+                });
+            }
+            bands.push(crate::report::BandSection {
+                band: band.name().to_string(),
+                figures: rows,
+                maps,
+            });
+        }
+        self.settings = saved;
+        self.changed(false);
+        let s = &self.settings;
+        let report = crate::report::Report {
+            title: text("title").unwrap_or_else(|| "Wi-Fi coverage".to_string()),
+            notes: text("notes"),
+            plan: plan_name,
+            routers,
+            materials,
+            settings: vec![
+                ("Device height".into(), format!("{} m", m(s.client_height))),
+                ("Path-loss exponent".into(), format!("{}", s.exponent)),
+                ("Grid".into(), format!("{} mm", s.grid_step)),
+                (
+                    "Device spatial streams".into(),
+                    s.client_streams.to_string(),
+                ),
+                (
+                    "Power capped at the usual limits".into(),
+                    if s.cap_eirp { "yes" } else { "no" }.into(),
+                ),
+                (
+                    "Openings counted as closed below".into(),
+                    format!("{} m", m(s.close_gaps)),
+                ),
+                ("Model cut at".into(), format!("{} m", m(s.slice_height))),
+            ],
+            bands,
+        };
+        let html = crate::report::html(&report);
+        std::fs::write(&path, &html).map_err(|e| bad(command, format!("{path}: {e}")))?;
+        Ok(
+            json!({"path": path, "bands": report.bands.len(), "maps": report.bands.iter().map(|b| b.maps.len()).sum::<usize>(), "bytes": html.len()}),
+        )
     }
 
     fn project_save(&mut self, command: &str, p: &Value) -> Result<Value> {

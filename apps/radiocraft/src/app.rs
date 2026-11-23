@@ -219,6 +219,20 @@ impl App {
                 self.status = Some((format!("{} {}", tr("Saved"), path.to_string_lossy()), false));
             }
             if ui
+                .button(tr("Export report…"))
+                .on_hover_text(tr("One HTML page with every band's maps and figures; print it to PDF from a browser"))
+                .clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter("HTML", &["html"])
+                    .set_file_name("coverage-report.html")
+                    .save_file()
+                && self
+                    .run("report.export", json!({"path": path.to_string_lossy()}))
+                    .is_some()
+            {
+                self.status = Some((format!("{} {}", tr("Saved"), path.to_string_lossy()), false));
+            }
+            if ui
                 .button(tr("Device file…"))
                 .on_hover_text(tr("A JSON list of devices: {id, name, eirp_dbm}"))
                 .clicked()

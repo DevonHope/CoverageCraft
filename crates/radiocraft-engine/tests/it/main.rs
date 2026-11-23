@@ -292,6 +292,63 @@ fn channels_maps_and_leakage() {
     );
 }
 
+/// The report holds every band's maps, escapes what users type, names the plan by its file only,
+/// and leaves the shown band and map as they were.
+#[test]
+fn the_report_is_one_html_page() {
+    let dir = std::env::temp_dir().join(format!("radiocraft-report-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut e = Engine::new();
+    run(
+        &mut e,
+        "plan.open",
+        json!({"path": fixture("cadcraft-apartment.dxf")}),
+    );
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [2500, 2500], "height": 2400, "device": "generic-router", "name": "Hall <main>", "channels": {"5": 36, "2.4": 1}}),
+    );
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [9500, 6000], "height": 2400, "device": "generic-router", "name": "Den", "channels": {"5": 40}}),
+    );
+    run(
+        &mut e,
+        "settings.set",
+        json!({"band": "2.4", "view": "rate"}),
+    );
+    let path = dir.join("report.html");
+    let r = run(
+        &mut e,
+        "report.export",
+        json!({"path": path.to_string_lossy(), "title": "Flat & co", "notes": "Router <b>here</b>"}),
+    );
+    // 2.4 and 5 GHz; each with signal, second, serving, overlap, rate and leakage.
+    assert_eq!(r["bands"], 2, "{r}");
+    assert_eq!(r["maps"], 12, "{r}");
+    let html = std::fs::read_to_string(&path).unwrap();
+    assert!(html.contains("<title>Flat &amp; co</title>"));
+    assert!(html.contains("Hall &lt;main&gt;") && html.contains("Router &lt;b&gt;here&lt;/b&gt;"));
+    assert!(html.contains("Plan: cadcraft-apartment.dxf"));
+    assert!(
+        !html.contains(env!("CARGO_MANIFEST_DIR")),
+        "the report names folders"
+    );
+    assert_eq!(html.matches("data:image/png;base64,").count(), 12);
+    assert_eq!(e.settings().band.name(), "2.4");
+    assert_eq!(e.settings().view, radiocraft_engine::radio::View::Rate);
+    assert!(
+        e.execute(
+            "report.export",
+            &json!({"path": dir.join("r.pdf").to_string_lossy()})
+        )
+        .is_err()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A project saved before channels and maps existed opens, with them unset.
 #[test]
 fn an_older_project_opens() {
