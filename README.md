@@ -23,10 +23,23 @@ see [What the numbers mean](#what-the-numbers-mean).
   routers, a ceiling access point and a mesh node are built in, and a device file built from FCC
   and ISED certification records adds real products.
 - **Coverage.** A heatmap for 2.4, 5 or 6 GHz; the share of the floor at −60 dBm or better (fast)
-  and −67 dBm or better (video calls), the weakest 5 % and the median; hover anywhere for the
-  signal there and which router gives it.
-- **Projects.** Save the materials, routers and settings as a `.rcraft` file beside the plan.
-  Export the heatmap as a PNG.
+  and −67 dBm or better (video calls), the weakest 5 % and the median.
+- **Channels.** Give each router a channel and width per band; channels are checked against the
+  band's channel plan.
+- **Maps.** Besides the signal: the second-strongest signal (is there a router to roam to?), the
+  serving router, how many routers on an overlapping channel are heard (at the 802.11 −82 dBm
+  level), the estimated link rate (from the 802.11 receiver sensitivity table, with nothing else
+  on the air), and signal reaching up to 3 m outside the walls (leakage).
+- **Probe.** Hover anywhere: the three strongest routers with their signal and channel, the link
+  rate, and the routers sharing the channel there.
+- **Suggest a spot.** Place a router where it raises the floor at −67 dBm or better the most,
+  given the routers already there; repeat for more.
+- **Measurements.** Read measured points (CSV or JSON), see how far the prediction is from them,
+  and calibrate: fit the path-loss exponent and a per-band offset to them.
+- **Reports.** One HTML page with every band's figures and maps, the routers, the walls and the
+  settings; print it to PDF from a browser.
+- **Projects.** Save the materials, routers, channels, measurements and settings as a `.rcraft`
+  file beside the plan. Export the shown map as a PNG.
 - **Everything is a command.** The window, the CLI and scripts all run the same commands.
 
 ## Build and run
@@ -50,6 +63,17 @@ cargo run --release -p radiocraft-cli -- plan tests/fixtures/cadcraft-apartment.
 ```bash
 cargo run --release -p radiocraft-cli -- script docs/examples/cadcraft-apartment.json
 ```
+
+Measured points are a CSV with a header row:
+
+```text
+x,y,band,rssi_dbm,router
+1000,800,5,-42.4,Living room
+```
+
+Positions in millimetres on the plan, the signal in dBm, and optionally the router it was
+measured from (otherwise the strongest one). `docs/examples/survey-synthetic.csv` is made up (a
+known model plus noise) to try it on the CADCraft example: calibrating finds an exponent near 3.
 
 `radiocraft-cli commands` lists every command and its parameters. A script is
 `{"commands": [{"command": "...", "params": {...}}, ...]}`, run in order; the window takes the
@@ -93,10 +117,11 @@ real signal is often a few dB either side. Use it to compare placements, then ch
 
 ## Status
 
-Beta. Working: DXF and OBJ/STL plans, materials, routers, devices, the three bands, the
-heatmap and figures, projects, PNG export, the CLI and scripts. Not yet: several floors, channel
-planning, automatic placement, antenna patterns, measured site surveys, translations beyond
-English (strings go through `i18n::tr` already). See [docs/plan.md](docs/plan.md).
+Beta. Working: DXF and OBJ/STL plans, materials, routers, devices, channels, the three bands,
+six maps and their figures, the probe, spot suggestions, measured points and calibration, HTML
+reports, projects, PNG export, the CLI and scripts. Not yet: several floors, antenna patterns,
+live scanning of networks, translations beyond English (strings go through `i18n::tr` already).
+See [docs/plan.md](docs/plan.md).
 
 ## Licence
 

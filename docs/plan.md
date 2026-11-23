@@ -46,18 +46,22 @@ Outputs: a heatmap, the share of the floor at −60 dBm or better and at −67 d
   list such as one built from FCC and ISED records).
 - Heatmap, colour key, coverage figures; PNG export.
 - Every action is a command; `radiocraft-cli` runs the same commands with no window.
+- Added from the features common in site-survey tools, in our own design: channels per router;
+  maps of the second-strongest signal, the serving router, same-channel routers heard, the
+  estimated link rate and leakage outside the walls; a probe listing the strongest routers;
+  spot suggestions; measured points with comparison and calibration (exponent and per-band
+  offset); an HTML report.
 
 ## After the beta
 
-1. **Calibration.** Read measured signal at points (a phone app's export, a CSV) and fit the wall
-   losses and n to them.
-2. **Several floors.** Stack plans with floor heights; floors and ceilings get losses.
-3. **Channel planning.** With several routers: channels and overlap per band.
-4. **Router placement.** Suggest positions that reach a target coverage with the fewest routers.
-5. **Antenna patterns.** A device file can carry a pattern; ceiling and wall mounts differ.
-6. **Site survey** (needs a decision from the Craft maintainers): measure networks around you
-   on the computer running RadioCraft. It needs OS network access, which the other Craft apps
-   don't use.
+1. **Several floors.** Stack plans with floor heights; floors and ceilings get losses.
+2. **Calibration of wall losses.** Fit materials' losses too, not only the exponent and offsets,
+   when there are enough measured points behind each wall.
+3. **Channel suggestions.** Pick channels that keep same-channel routers apart.
+4. **Antenna patterns.** A device file can carry a pattern; ceiling and wall mounts differ.
+5. **Site survey** (needs a decision from the Craft maintainers): measure networks around you
+   on the computer running RadioCraft, click by click or while walking. It needs OS network
+   access, which the other Craft apps don't use.
 
 ## Craft conventions it follows
 
