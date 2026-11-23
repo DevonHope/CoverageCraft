@@ -56,6 +56,25 @@ cargo run --release -p radiocraft
 cargo run --release -p radiocraft -- tests/fixtures/cadcraft-apartment.dxf
 ```
 
+### Install on macOS
+
+```bash
+scripts/install-macos.sh
+```
+
+It builds a release and installs `RadioCraft.app` in `~/Applications` (set `RADIOCRAFT_APP_DIR`
+for elsewhere); the command-line tool is inside it at
+`RadioCraft.app/Contents/MacOS/radiocraft-cli`. To keep the installed app up to date while
+developing, add local git hooks that reinstall it in the background after every commit, merge,
+pull or branch checkout:
+
+```bash
+scripts/install-macos.sh --hooks
+```
+
+Progress goes to `~/Library/Logs/RadioCraft/install.log`, and a notification says when a build
+is installed. Quit and reopen the app to run the new build.
+
 The command-line tool runs the same engine without a window:
 
 ```bash
