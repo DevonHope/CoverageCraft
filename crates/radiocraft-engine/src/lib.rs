@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod devices;
+pub mod dwg;
 pub mod dxf;
 pub mod engine;
 pub mod materials;

@@ -225,7 +225,7 @@ impl App {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 tr("Plans, models and projects"),
-                &["dxf", "sc", "obj", "stl", "rcraft"],
+                &["dxf", "dwg", "sc", "obj", "stl", "rcraft"],
             )
             .pick_file()
         {

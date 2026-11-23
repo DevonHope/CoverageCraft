@@ -13,10 +13,18 @@ see [What the numbers mean](#what-the-numbers-mean).
 
 ## What it does
 
-- **Plans from other Craft apps.** A DXF plan is read by its layers (CADCraft's `A-WALL`,
-  `A-GLAZ`, `A-DOOR`, `A-FURN` and the like). A 3D model is cut at a height (1 m by default) and
-  read by its objects, one per SolidCraft body. Blocks, arcs, bulged polylines and hatches are
-  read; walls drawn as closed outlines keep their rooms open.
+- **Plans from other Craft apps.** A CADCraft drawing (DXF, or DWG through the `acadrust` crate
+  as CADCraft reads it) is read by its layers (`A-WALL`, `A-GLAZ`, `A-DOOR`, `A-FURN` and the
+  like); its named views can frame the map. A SolidCraft design (`.sc`) opens through SolidCraft's
+  own `solidcraft-cli`, so SolidCraft must be installed (or point `RADIOCRAFT_SOLIDCRAFT_CLI` at
+  its CLI). It and OBJ and STL models are cut at a height (1 m by default) and read by their
+  objects, one per body. Blocks, arcs, bulged polylines and hatches are read; walls drawn as
+  closed outlines keep their rooms open.
+- **Viewpoints.** A model is seen from the top (a floor plan), the bottom, front, back, left or
+  right, or from a view saved in the SolidCraft design, and cut at a depth toward you; routers
+  stay where they are in the building when you change it.
+- **The Craft header.** The same title bar, menus (in the macOS menu bar), toolbar, status bar
+  and Home page as the other Craft apps, through craft-libs' `craft-window` and `craft-menu`.
 - **Materials.** Each layer or object is concrete, drywall, low-E glass, interior glass, metal,
   a wood door, "not a wall", or "guess from thickness" (drywall below 140 mm, concrete from there).
   The first guess comes from the names (`glass`, `door`, `fridge`, `sofa`…); change any of them.

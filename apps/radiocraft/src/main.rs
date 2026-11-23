@@ -7,7 +7,7 @@ mod theme;
 use craft_window::Prefix;
 use craft_window::policy::{Backend, Frame, TitleBarPref, apply, decide_for};
 
-const USAGE: &str = "usage: radiocraft [plan.dxf|design.sc|model.obj|model.stl|project.rcraft] [--script commands.json] [--screenshot out.png]";
+const USAGE: &str = "usage: radiocraft [plan.dxf|plan.dwg|design.sc|model.obj|model.stl|project.rcraft] [--script commands.json] [--screenshot out.png]";
 
 fn main() -> eframe::Result {
     let (mut path, mut script, mut screenshot) = (None, None, None);

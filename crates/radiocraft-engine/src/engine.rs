@@ -224,7 +224,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "plan.open",
-        "{path, slice_height?, up?: z|y, viewpoint?} → read a DXF plan (CADCraft), cut an OBJ/STL model or a SolidCraft design (.sc, through SolidCraft's solidcraft-cli) along the viewpoint",
+        "{path, slice_height?, up?: z|y, viewpoint?} → read a DXF or DWG plan (CADCraft), cut an OBJ/STL model or a SolidCraft design (.sc, through SolidCraft's solidcraft-cli) along the viewpoint",
     ),
     (
         "project.new",
@@ -595,6 +595,13 @@ impl Engine {
             let bytes = read_file(command, path)?;
             if lower.ends_with(".dxf") {
                 read_dxf(&bytes, path).map_err(|e| bad(command, format!("{path}: {e}")))?
+            } else if lower.ends_with(".dwg") {
+                let dxf =
+                    crate::dwg::to_dxf(&bytes).map_err(|e| bad(command, format!("{path}: {e}")))?;
+                let mut plan =
+                    read_dxf(&dxf, path).map_err(|e| bad(command, format!("{path}: {e}")))?;
+                plan.notes.push("read from DWG through acadrust".into());
+                plan
             } else if lower.ends_with(".obj") || lower.ends_with(".stl") {
                 let (_, basis) = pick(&crate::viewpoint::model_views());
                 read_mesh(

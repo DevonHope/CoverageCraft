@@ -659,6 +659,43 @@ fn a_solidcraft_design_opens() {
     assert_eq!(run(&mut e, "plan.info", json!({}))["viewpoint"], "front");
 }
 
+/// A DWG opens as the same plan as its DXF: the example apartment, written as DWG by acadrust.
+#[test]
+fn a_dwg_plan_opens() {
+    let dir = std::env::temp_dir().join(format!("radiocraft-dwg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = acadrust::DxfReader::from_file(fixture("cadcraft-apartment.dxf"))
+        .unwrap()
+        .read()
+        .unwrap();
+    let path = dir.join("apartment.dwg");
+    std::fs::write(&path, acadrust::DwgWriter::write_to_vec(&doc).unwrap()).unwrap();
+    let mut e = Engine::new();
+    let info = run(&mut e, "plan.open", json!({"path": path.to_string_lossy()}));
+    assert_eq!(
+        source(&info, "A-GLAZ")["material"],
+        "interior-glass",
+        "{info}"
+    );
+    let b = info["bounds"].as_array().unwrap();
+    assert!(
+        (b[2].as_f64().unwrap() - b[0].as_f64().unwrap() - 12000.0).abs() < 1.0,
+        "{info}"
+    );
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [6000, 4000], "height": 2400}),
+    );
+    assert!(
+        run(&mut e, "coverage.compute", json!({}))["floor_m2"]
+            .as_f64()
+            .unwrap()
+            > 50.0
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A project saved before channels and maps existed opens, with them unset.
 #[test]
 fn an_older_project_opens() {
@@ -743,7 +780,10 @@ fn hostile_commands_are_refused() {
     // Garbage as a DXF is an error, not a crash.
     let dir = std::env::temp_dir().join(format!("radiocraft-hostile-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    // None of these may crash; the DWG ones must also be refused.
     for (name, bytes) in [
+        ("empty.dwg", Vec::new()),
+        ("junk.dwg", b"AC1032 this is not a drawing at all".to_vec()),
         (
             "x.dxf",
             b"0\nSECTION\n2\nENTITIES\n0\nLINE\n10\nnan\n".to_vec(),
@@ -753,7 +793,10 @@ fn hostile_commands_are_refused() {
     ] {
         let path = dir.join(name);
         std::fs::write(&path, bytes).unwrap();
-        let _ = e.execute("plan.open", &json!({"path": path.to_string_lossy()}));
+        let opened = e.execute("plan.open", &json!({"path": path.to_string_lossy()}));
+        if name.ends_with(".dwg") {
+            assert!(opened.is_err(), "{name}");
+        }
         let _ = e.execute("coverage.compute", &json!({}));
     }
     let _ = std::fs::remove_dir_all(&dir);

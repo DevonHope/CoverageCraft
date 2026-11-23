@@ -12,6 +12,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 png = { workspace = true }
 thiserror = { workspace = true }
+# DWG reading, as CADCraft does it (MPL-2.0, used unmodified; see ATTRIBUTION.md).
+acadrust = { version = "=0.6.8", default-features = false }
+
+[dev-dependencies]
+acadrust = { version = "=0.6.8", default-features = false }
 
 [lints]
 workspace = true

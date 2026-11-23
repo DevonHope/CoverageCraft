@@ -521,7 +521,7 @@ impl App {
             }
             ui.add_space(14.0);
             for line in [
-                tr("CADCraft drawings (DXF), with their named views"),
+                tr("CADCraft drawings (DXF and DWG), with their named views"),
                 tr("SolidCraft designs (.sc), seen from any side or a saved view"),
                 tr("OBJ and STL models, and RadioCraft projects (.rcraft)"),
             ] {
