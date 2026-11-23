@@ -1571,6 +1571,10 @@ fn calibration_finds_wall_losses() {
     );
     run(&mut e, "edit.undo", json!({}));
     assert!(e.settings().loss_db.is_empty());
+    // Looking at a fit after an undo keeps Redo.
+    let h = run(&mut e, "edit.history", json!({}));
+    run(&mut e, "survey.calibrate", json!({}));
+    assert_eq!(run(&mut e, "edit.history", json!({})), h);
     assert_eq!(e.settings().exponent, 2.2);
     // With noise the error on points the fit didn't see is the larger.
     let mut noisy = open(&survey(6.0), "noisy.csv");
@@ -1655,10 +1659,25 @@ fn channels_are_suggested() {
     assert_eq!(widths, vec![80, 80, 40, 80], "{list}");
     run(&mut e, "edit.undo", json!({}));
     assert_eq!(figure(&mut e), before);
+    // Looking after an undo keeps Redo.
+    let h = run(&mut e, "edit.history", json!({}));
+    assert!(!h["redo"].as_array().unwrap().is_empty(), "{h}");
+    run(&mut e, "channel.suggest", json!({"dfs": true}));
+    assert_eq!(run(&mut e, "edit.history", json!({})), h);
     // Without DFS, 80 MHz has two channels for three 80 MHz routers: said so.
     let s = run(&mut e, "channel.suggest", json!({}));
     assert!(s["note"].as_str().unwrap_or("").contains("dfs"), "{s}");
     // A kept router keeps its channel.
+    // Routers too far apart to hear each other: no shortage, whatever the channel count.
+    let far = run(
+        &mut e,
+        "channel.suggest",
+        json!({"channels": [36, 40, 44, 48], "keep": [2, 3, 4]}),
+    );
+    assert!(
+        far["shortage"].is_null() || far["after_pct_no_channel_overlap"].as_f64().unwrap() < 100.0,
+        "{far}"
+    );
     let s = run(&mut e, "channel.suggest", json!({"dfs": true, "keep": [1]}));
     assert!(
         s["routers"]

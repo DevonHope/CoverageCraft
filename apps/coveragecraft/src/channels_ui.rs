@@ -74,7 +74,7 @@ impl App {
                 tr("to")
             ))
             .on_hover_text(tr(
-                "Where a device hears no other router on a channel overlapping its own router's, at −82 dBm or more; every floor counts",
+                "Where a device hears no other router on a channel overlapping its own router's, at −82 dBm or more; every floor counts in the top view, only the shown one from a side",
             ));
         }
         let mut notes: Vec<String> = Vec::new();

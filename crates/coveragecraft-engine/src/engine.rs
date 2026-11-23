@@ -1529,10 +1529,21 @@ impl Engine {
         };
         let mut out = Vec::new();
         for i in floors {
+            // Each floor framed as its own map is: by the viewpoint's named view in its plan.
             let (walls, window) = if i == self.active {
                 (self.walls()?, self.plan_view().and_then(|v| v.window))
             } else {
-                (self.floor_walls(i), None)
+                let window = self
+                    .floors
+                    .get(i)
+                    .and_then(|f| f.plan.as_ref())
+                    .and_then(|p| {
+                        p.views
+                            .iter()
+                            .find(|v| v.id == s.viewpoint)
+                            .and_then(|v| v.window)
+                    });
+                (self.floor_walls(i), window)
             };
             // A floor without a plan has no cells to score.
             let Some((grid, cells, _)) = floor_grid(&s, &walls, window) else {
@@ -1688,8 +1699,10 @@ impl Engine {
             "kept": keep,
         });
         let mut notes: Vec<String> = Vec::new();
+        // Too few channels only matters when routers still share one where they're heard.
         if let Some(fewest) = options.iter().map(Vec::len).min()
             && fewest < free.len()
+            && pct(&suggested, &all) < 100.0
         {
             out["shortage"] = json!({"routers": free.len(), "channels": fewest});
             notes.push(format!(
