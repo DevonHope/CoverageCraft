@@ -50,15 +50,16 @@ Outputs: a heatmap, the share of the floor at −60 dBm or better and at −67 d
   maps of the second-strongest signal, the serving router, same-channel routers heard, the
   estimated link rate and leakage outside the walls; a probe listing the strongest routers;
   spot suggestions; measured points with comparison and calibration (exponent and per-band
-  offset); an HTML report.
+  offset); an HTML report. Since then: several floors (plans stacked with elevations, offsets and
+  slabs, signals crossing them along the straight path).
 
 ## After the beta
 
-1. **Several floors.** Stack plans with floor heights; floors and ceilings get losses.
-2. **Calibration of wall losses.** Fit materials' losses too, not only the exponent and offsets,
+1. **Calibration of wall losses.** Fit materials' losses too, not only the exponent and offsets,
    when there are enough measured points behind each wall.
-3. **Channel suggestions.** Pick channels that keep same-channel routers apart.
-4. **Antenna patterns.** A device file can carry a pattern; ceiling and wall mounts differ.
+2. **Channel suggestions.** Pick channels that keep same-channel routers apart.
+3. **Antenna patterns.** A device file can carry a pattern; ceiling and wall mounts differ.
+4. **Openings in slabs.** Stairwells and shafts as regions of a floor with no slab.
 5. **Site survey** (needs a decision from the Craft maintainers): measure networks around you
    on the computer running RadioCraft, click by click or while walking. It needs OS network
    access, which the other Craft apps don't use.

@@ -175,6 +175,25 @@ impl App {
                 ItemKind::Radio(s.viewpoint == v.id),
             ));
         }
+        for (i, f) in self.engine.floors().iter().enumerate() {
+            rows.push(row(
+                &["View", "Floor"],
+                CommandRef::with_params("view.floor", json!({"index": i})),
+                &f.name,
+                None,
+                true,
+                ItemKind::Radio(i == self.engine.active_floor()),
+            ));
+        }
+        rows.push(separator(&["View", "Floor"]));
+        rows.push(row(
+            &["View", "Floor"],
+            CommandRef::new("floor.add"),
+            "Add Floor",
+            None,
+            has_plan,
+            plain,
+        ));
         rows.extend([
             separator(&["View"]),
             row(
@@ -254,6 +273,15 @@ impl App {
             self.engine.redo_label(),
         )
             .hash(&mut h);
+        (
+            self.engine.active_floor(),
+            self.engine
+                .floors()
+                .iter()
+                .map(|f| f.name.clone())
+                .collect::<Vec<_>>(),
+        )
+            .hash(&mut h);
         h.finish()
     }
 
@@ -295,6 +323,8 @@ impl App {
                 }
             }
             "help.about" => self.about = true,
+            "view.floor" => self.select_floor(&param("index")),
+            "floor.add" => self.add_floor(),
             "edit.undo" | "edit.redo" => {
                 if let Some(r) = self.run(&c.id, json!({})) {
                     let what = r["undone"]
@@ -464,6 +494,31 @@ impl App {
     /// What the map shows: band, map, viewpoint, cut height, fit.
     pub(super) fn tool_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
+            // The floor shown, and a new one.
+            let floors: Vec<String> = self.engine.floors().iter().map(|f| f.name.clone()).collect();
+            let active = self.engine.active_floor();
+            ui.label(RichText::new(tr("Floor")).color(TOKENS.text_dim));
+            let mut pick = None;
+            egui::ComboBox::from_id_salt("floor")
+                .selected_text(floors.get(active).cloned().unwrap_or_default())
+                .show_ui(ui, |ui| {
+                    for (i, name) in floors.iter().enumerate() {
+                        if ui.selectable_label(i == active, name).clicked() && i != active {
+                            pick = Some(i);
+                        }
+                    }
+                });
+            if let Some(i) = pick {
+                self.select_floor(&json!(i));
+            }
+            if ui
+                .button(tr("Add floor"))
+                .on_hover_text(tr("A floor above the highest; open its plan next"))
+                .clicked()
+            {
+                self.add_floor();
+            }
+            ui.separator();
             ui.label(RichText::new(tr("Band")).color(TOKENS.text_dim));
             let band = self.engine.settings().band;
             for b in Band::ALL {
@@ -669,5 +724,138 @@ impl App {
                 });
             });
         self.about = open;
+    }
+}
+
+impl App {
+    pub(super) fn select_floor(&mut self, index: &Value) {
+        if self.run("floor.select", json!({"index": index})).is_some() {
+            self.selected = None;
+            self.slice = self.engine.settings().slice_height;
+            self.view.fitted_to = None;
+            self.view.moved = false;
+        }
+    }
+
+    pub(super) fn add_floor(&mut self) {
+        if let Some(r) = self.run("floor.add", json!({})) {
+            self.selected = None;
+            self.slice = self.engine.settings().slice_height;
+            let index = r["index"]
+                .as_u64()
+                .and_then(|i| usize::try_from(i).ok())
+                .unwrap_or(0);
+            let name = self
+                .engine
+                .floors()
+                .get(index)
+                .map(|f| f.name.clone())
+                .unwrap_or_default();
+            self.status = Some((
+                format!(
+                    "{name}: {}",
+                    tr("open its plan (File › Open), or keep it as a floor without walls")
+                ),
+                false,
+            ));
+        }
+    }
+
+    /// The shown floor: name, elevation, offset, slab; remove. Shown once there are two.
+    pub(super) fn floor_section(&mut self, ui: &mut egui::Ui) {
+        use radiocraft_engine::materials::{Material, RF_PRESETS};
+        let floors = self.engine.floors().to_vec();
+        if floors.len() < 2 {
+            return;
+        }
+        let i = self.engine.active_floor();
+        let Some(f) = floors.get(i) else { return };
+        ui.heading(tr("Floor"));
+        let mut commands: Vec<Value> = Vec::new();
+        egui::Grid::new("floor_grid").num_columns(2).show(ui, |ui| {
+            ui.label(tr("Name"));
+            if self.floor_name.as_ref().is_none_or(|(k, _)| *k != i) {
+                self.floor_name = Some((i, f.name.clone()));
+            }
+            if let Some((_, buf)) = self.floor_name.as_mut() {
+                let r = ui.add(egui::TextEdit::singleline(buf).desired_width(150.0));
+                if r.lost_focus() && !buf.trim().is_empty() && *buf != f.name {
+                    commands.push(json!({"index": i, "name": buf.trim()}));
+                }
+            }
+            ui.end_row();
+            ui.label(tr("Elevation"));
+            let mut m = f.elevation / 1000.0;
+            if ui
+                .add(egui::DragValue::new(&mut m).speed(0.05).suffix(" m").range(-1000.0..=1000.0))
+                .changed()
+            {
+                commands.push(json!({"index": i, "elevation": m * 1000.0}));
+            }
+            ui.end_row();
+            ui.label(tr("Offset")).on_hover_text(tr(
+                "Where this floor's plan sits in the building, so plans drawn at different origins line up",
+            ));
+            let mut o = f.offset;
+            let changed = ui
+                .horizontal(|ui| {
+                    let x = ui
+                        .add(egui::DragValue::new(&mut o[0]).speed(10.0).prefix("x ").suffix(" mm"))
+                        .changed();
+                    let y = ui
+                        .add(egui::DragValue::new(&mut o[1]).speed(10.0).prefix("y ").suffix(" mm"))
+                        .changed();
+                    x || y
+                })
+                .inner;
+            if changed {
+                commands.push(json!({"index": i, "offset": o}));
+            }
+            ui.end_row();
+            ui.label(tr("Slab below"));
+            let shown = match &f.slab {
+                Material::Preset(id) => tr(super::preset_label(id)),
+                Material::Ignore => tr("None (an opening)"),
+                _ => tr("Custom"),
+            };
+            egui::ComboBox::from_id_salt("slab").selected_text(shown).show_ui(ui, |ui| {
+                for p in RF_PRESETS {
+                    if ui
+                        .selectable_label(f.slab == Material::Preset(p.id), tr(super::preset_label(p.id)))
+                        .clicked()
+                    {
+                        commands.push(json!({"index": i, "slab": p.id}));
+                    }
+                }
+                if ui
+                    .selectable_label(f.slab == Material::Ignore, tr("None (an opening)"))
+                    .clicked()
+                {
+                    commands.push(json!({"index": i, "slab": "ignore"}));
+                }
+            });
+            ui.end_row();
+        });
+        if ui
+            .small_button(tr("Remove this floor"))
+            .on_hover_text(tr(
+                "With its routers and measured points; Undo brings them back",
+            ))
+            .clicked()
+        {
+            if self.run("floor.remove", json!({"index": i})).is_some() {
+                self.floor_name = None;
+                self.selected = None;
+                self.slice = self.engine.settings().slice_height;
+                self.view.fitted_to = None;
+            }
+            return;
+        }
+        for c in commands {
+            if self.run("floor.set", c).is_some() {
+                self.floor_name = None;
+            }
+        }
+        ui.separator();
     }
 }

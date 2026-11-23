@@ -56,6 +56,13 @@ see [What the numbers mean](#what-the-numbers-mean).
   settings; print it to PDF from a browser.
 - **Projects.** Save the materials, routers, channels, measurements and settings as a `.rcraft`
   file beside the plan. Export the shown map as a PNG.
+- **Several floors.** Stack floors: each has its own plan (a DXF, or the same model cut higher),
+  an elevation, an offset to line plans up, and the slab under it (concrete unless you choose;
+  "none" for an opening). A router on one floor reaches the others along the straight path
+  through the building: the walls on each floor it passes, plus each slab once, the same both
+  ways. Routers and measured points belong to a floor (a `floor` column in a measurements CSV);
+  routers on other floors show faded. Floors stack in the top view; from a side, the shown floor
+  stands alone.
 - **Undo and redo.** Every edit (materials, routers, channels, settings, measurements, devices)
   can be undone and redone: Edit menu, ⌘Z and ⇧⌘Z, or the bar's buttons, named for what they do.
   A drag is one step; switching the band or map shown isn't an edit; opening a plan starts a new
@@ -157,6 +164,9 @@ real signal is often a few dB either side. Use it to compare placements, then ch
 ## Status
 
 Known limits:
+
+- Floors: slabs are uniform (no stairwells, shafts or openings in them unless the whole slab is
+  "none"), and calibration fits the walls' model, not the slabs' loss.
 
 - A SolidCraft design opens through the installed SolidCraft. In the window SolidCraft exports it
   in the background (the status bar shows it, with Cancel); the CLI and scripts wait for it. An

@@ -502,6 +502,15 @@ impl Engine {
         &self.devices
     }
 
+    /// The floors (the shown one's plan is [`Engine::plan`]) and which is shown.
+    pub fn floors(&self) -> &[Floor] {
+        &self.floors
+    }
+
+    pub fn active_floor(&self) -> usize {
+        self.active
+    }
+
     pub fn survey(&self) -> &[Point] {
         &self.survey
     }
@@ -2669,6 +2678,13 @@ fn group_key(command: &str, p: &Value) -> Option<String> {
             Some(format!("set:{id}:{}", keys.join(",")))
         }
         ("settings.set", ["slice_height"]) => Some("cut".into()),
+        ("floor.set", ["elevation", "index"] | ["index", "offset"] | ["index", "name"]) => {
+            Some(format!(
+                "floor:{}:{}",
+                p.get("index").unwrap_or(&Value::Null),
+                keys.join(",")
+            ))
+        }
         _ => None,
     }
 }

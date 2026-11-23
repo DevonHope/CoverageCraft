@@ -68,6 +68,8 @@ pub struct App {
     pointer: Option<[f64; 2]>,
     /// A SolidCraft design being exported in the background, before it opens.
     pending: Option<Pending>,
+    /// The floor name being typed: the floor and the text so far.
+    floor_name: Option<(usize, String)>,
 }
 
 /// A file waiting for SolidCraft to export its design.
@@ -133,6 +135,7 @@ impl App {
             movable: None,
             pointer: None,
             pending: None,
+            floor_name: None,
         };
         if let Some(path) = path {
             app.open(&path);
@@ -491,6 +494,7 @@ impl App {
     }
 
     fn sources_panel(&mut self, ui: &mut egui::Ui) {
+        self.floor_section(ui);
         ui.heading(tr("Layers and objects"));
         let Some(plan) = self.engine.plan() else {
             ui.label(tr(
@@ -646,6 +650,28 @@ impl App {
             // the band's channel plan doesn't have.
             let band = self.engine.settings().band;
             let current = r.channels.get(band.index()).copied().flatten();
+            // The router's floor, when there are several.
+            let floors: Vec<String> = self
+                .engine
+                .floors()
+                .iter()
+                .map(|f| f.name.clone())
+                .collect();
+            if floors.len() > 1 {
+                ui.horizontal(|ui| {
+                    ui.label(tr("Floor"));
+                    egui::ComboBox::from_id_salt(format!("router floor {}", r.id))
+                        .selected_text(floors.get(r.floor).cloned().unwrap_or_default())
+                        .show_ui(ui, |ui| {
+                            for (i, name) in floors.iter().enumerate() {
+                                if ui.selectable_label(i == r.floor, name).clicked() && i != r.floor
+                                {
+                                    commands.push(("router.set", json!({"id": r.id, "floor": i})));
+                                }
+                            }
+                        });
+                });
+            }
             ui.horizontal(|ui| {
                 ui.label(tr("Channel"));
                 let text = current.map_or_else(|| tr("Not set"), |c| c.number.to_string());
@@ -1008,7 +1034,32 @@ impl App {
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .map(|(id, _)| id)
         };
-        let routers = self.engine.routers().to_vec();
+        let all = self.engine.routers().to_vec();
+        let active = self.engine.active_floor();
+        let floor_name = |i: usize| {
+            self.engine
+                .floors()
+                .get(i)
+                .map_or_else(String::new, |f| f.name.clone())
+        };
+        // Routers on other floors: faded, named with their floor, not picked or dragged here.
+        for r in all.iter().filter(|r| r.floor != active) {
+            let p = to_screen(&self.view, r.at);
+            painter.circle(
+                p,
+                TOKENS.router_radius * 0.8,
+                TOKENS.router_fill.gamma_multiply(0.35),
+                Stroke::new(2.0, TOKENS.accent.gamma_multiply(0.45)),
+            );
+            painter.text(
+                p + Vec2::new(TOKENS.router_radius + 4.0, 0.0),
+                Align2::LEFT_CENTER,
+                format!("{} · {}", r.name, floor_name(r.floor)),
+                FontId::proportional(12.0),
+                TOKENS.text_dim,
+            );
+        }
+        let routers: Vec<_> = all.iter().filter(|r| r.floor == active).cloned().collect();
         for r in &routers {
             let p = to_screen(&self.view, r.at);
             let ring = if self.selected == Some(r.id) {
@@ -1084,7 +1135,14 @@ impl App {
             if let Some(v) = self.engine.execute("coverage.at", &json!({"at": at})).ok()
                 && let Some(band) = v["bands"].get(self.engine.settings().band.name())
             {
-                let text = probe_text(band, self.engine.routers().len());
+                let mut text = probe_text(band, self.engine.routers().len());
+                // From another floor: say which.
+                if let Some(f) = band["floor"].as_u64().and_then(|f| usize::try_from(f).ok())
+                    && f != self.engine.active_floor()
+                    && let Some(floor) = self.engine.floors().get(f)
+                {
+                    text = format!("{text}\n{} {}", tr("strongest from"), floor.name);
+                }
                 if !text.is_empty() {
                     let galley = painter.layout_no_wrap(text, FontId::monospace(12.0), TOKENS.text);
                     let at = pos + Vec2::new(14.0, -14.0 - galley.size().y);

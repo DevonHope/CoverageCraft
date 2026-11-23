@@ -11,7 +11,8 @@ how this repository applies it.
   `plan.rs`), materials (`materials.rs`), the signal model (`model.rs`), channels and link rate
   (`radio.rs`), the maps (`views.rs`), spot suggestions (`placement.rs`), measured points and
   calibration (`survey.rs`), devices (`devices.rs`), the commands (`engine.rs`), PNG export
-  (`picture.rs`), the HTML report (`report.rs`), viewpoints (`viewpoint.rs`), SolidCraft designs
+  (`picture.rs`), the HTML report (`report.rs`), viewpoints (`viewpoint.rs`), floors (`floors.rs`; the
+  cross-floor path is `model::Building`), SolidCraft designs
   through `solidcraft-cli` (`sc.rs`) and DWG through acadrust (`dwg.rs`). No egui here.
 - `apps/radiocraft`: the egui window. It only calls `Engine::execute` and reads the engine's
   state; a feature that exists only in the window is a bug. `header.rs` is the Craft header
