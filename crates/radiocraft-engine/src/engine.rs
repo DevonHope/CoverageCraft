@@ -21,7 +21,7 @@ const MAX_FILE_BYTES: u64 = 512 << 20;
 const MAX_COORD: f64 = 1.0e8;
 /// The most routers a plan has.
 const MAX_ROUTERS: usize = 64;
-/// How far past the floor's outline the leakage map looks (mm).
+/// How far past the plan's outer edge (its bounding box) the leakage map looks (mm).
 const LEAK_MM: f64 = 3000.0;
 /// The most signals (cells × routers) kept at once: 64 MB.
 const MAX_SIGNALS: usize = 16_000_000;
@@ -227,7 +227,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "router.add",
-        "{at: [x, y], height?, name?, device? | eirp_dbm?: dBm | {\"2.4\",\"5\",\"6\"}, channels?: {\"2.4\": 6, \"5\": {channel: 36, width: 80}, ...}} → {id}",
+        "{at: [x, y], height?, name?, device? | eirp_dbm?: dBm | {\"2.4\",\"5\",\"6\"}, channels?: {\"2.4\": 6, \"5\": {channel: 36, width: 80}, ...} (a bare number is 20 MHz; no width: 20 MHz on 2.4, 80 on 5 and 6)} → {id}",
     ),
     ("router.list", "{} → the routers"),
     (
@@ -1019,7 +1019,8 @@ impl Engine {
         // The leakage map pads the same grid with whole cells, all outside the floor, so the
         // floor's cells, and its figures, are the same in every map.
         let (grid, cells) = if outside {
-            let k = (LEAK_MM / s.grid_step).ceil() as usize;
+            // Out to LEAK_MM past the plan's outer edge, counting the usual grid's own margin.
+            let k = ((LEAK_MM - margin) / s.grid_step).ceil().max(0.0) as usize;
             let big = Grid {
                 origin: [
                     grid.origin[0] - k as f64 * grid.step,
@@ -1470,7 +1471,8 @@ impl Engine {
                     && let Some(v) = f["leakage"]["m2_at_least_67"].as_f64()
                 {
                     rows.push((
-                        "Outside the walls (within 3 m) at −67 dBm or better".to_string(),
+                        "Outside the walls, within 3 m of the plan's edge, at −67 dBm or better"
+                            .to_string(),
                         format!("{v:.1} m²"),
                     ));
                 }
@@ -1488,7 +1490,7 @@ impl Engine {
                     png,
                     key_note: match view {
                         View::Serving | View::Overlap => "Share of the floor".to_string(),
-                        View::Leakage => "Share of the area within 3 m outside the walls, at each level or better".to_string(),
+                        View::Leakage => "Share of the area outside the walls, within 3 m of the plan's edge, at each level or better (wall cavities and unenclosed spaces inside the plan count too)".to_string(),
                         View::Rate => "Share of the floor at each rate or better; the most the signal allows with nothing else on the air".to_string(),
                         _ => "Share of the floor at each level or better".to_string(),
                     },

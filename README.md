@@ -4,7 +4,7 @@ RadioCraft plans Wi-Fi coverage from the floor plans and models you already have
 from CADCraft, or an OBJ or STL model exported from SolidCraft. Tell it what each layer or object
 is made of, place routers and access points, and see the predicted signal across the floor.
 
-![RadioCraft with CADCraft's example apartment: concrete walls, a home router in the living room, and the signal falling off behind each wall](docs/screenshot.png)
+![RadioCraft with CADCraft's example apartment: two routers on overlapping 5 GHz channels (36 at 80 MHz and 44), and the map of where a device hears the other one on its channel](docs/screenshot.png)
 
 It is a beta. The numbers are a planning estimate from a simple indoor model, not a site survey;
 see [What the numbers mean](#what-the-numbers-mean).
@@ -25,11 +25,13 @@ see [What the numbers mean](#what-the-numbers-mean).
 - **Coverage.** A heatmap for 2.4, 5 or 6 GHz; the share of the floor at −60 dBm or better (fast)
   and −67 dBm or better (video calls), the weakest 5 % and the median.
 - **Channels.** Give each router a channel and width per band; channels are checked against the
-  band's channel plan.
+  band's channel plan. A bare number (`"5": 36`) is a 20 MHz channel; `{"channel": 36}` without
+  a width is 20 MHz on 2.4 GHz and 80 MHz on 5 and 6 GHz.
 - **Maps.** Besides the signal: the second-strongest signal (is there a router to roam to?), the
   serving router, how many routers on an overlapping channel are heard (at the 802.11 −82 dBm
   level), the estimated link rate (from the 802.11 receiver sensitivity table, with nothing else
-  on the air), and signal reaching up to 3 m outside the walls (leakage).
+  on the air), and signal outside the walls, out to 3 m past the plan's edge (leakage; spaces inside the
+  plan that the walls don't enclose, such as balconies and wall cavities, count as outside).
 - **Probe.** Hover anywhere: the three strongest routers with their signal and channel, the link
   rate, and the routers sharing the channel there.
 - **Suggest a spot.** Place a router where it raises the floor at −67 dBm or better the most,

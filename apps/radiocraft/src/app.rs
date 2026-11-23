@@ -42,6 +42,9 @@ pub struct App {
     slice: f64,
     /// `--screenshot`: where to save a picture of the window, and the frames drawn so far.
     screenshot: Option<(String, u32)>,
+    /// The figures and the survey comparison, kept until the engine changes (they cost a pass
+    /// over the floor and over every measured point).
+    figures_cache: Option<(u64, Value, Option<Value>)>,
     /// The picture, once the window has sent it.
     shot: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<egui::ColorImage>>>>,
 }
@@ -66,6 +69,7 @@ impl App {
             adding: false,
             slice: 1000.0,
             screenshot: screenshot.map(|p| (p, 0)),
+            figures_cache: None,
             shot: Default::default(),
         };
         if let Some(path) = path {
@@ -563,7 +567,27 @@ impl App {
             ui.label(tr("Add a router with a radio in this band."));
         }
         // The figures only the engine's report has: roaming, link rate, channels, leakage.
-        if let Ok(f) = self.engine.execute("coverage.compute", &json!({})) {
+        let revision = self.engine.revision();
+        if self
+            .figures_cache
+            .as_ref()
+            .is_none_or(|(r, _, _)| *r != revision)
+        {
+            let figures = self
+                .engine
+                .execute("coverage.compute", &json!({}))
+                .unwrap_or(Value::Null);
+            let survey = (!self.engine.survey().is_empty())
+                .then(|| self.engine.execute("survey.compare", &json!({})).ok())
+                .flatten();
+            self.figures_cache = Some((revision, figures, survey));
+        }
+        let (figures, survey) = self
+            .figures_cache
+            .as_ref()
+            .map(|(_, f, s)| (f.clone(), s.clone()))
+            .unwrap_or((Value::Null, None));
+        if let f @ Value::Object(_) = figures {
             egui::Grid::new("more_figures")
                 .num_columns(2)
                 .show(ui, |ui| {
@@ -602,7 +626,7 @@ impl App {
             ui.add_space(6.0);
             ui.label(egui::RichText::new(tr("Measurements")).strong());
             let band = self.engine.settings().band;
-            if let Ok(v) = self.engine.execute("survey.compare", &json!({})) {
+            if let Some(v) = survey {
                 let b = &v["bands"][band.name()];
                 if let (Some(n), Some(mean), Some(rms)) = (
                     b["points"].as_u64(),
@@ -645,7 +669,9 @@ impl App {
         ui.add_space(6.0);
         let key = match c.view {
             Map::Serving | Map::Overlap => tr("Key: share of the floor"),
-            Map::Leakage => tr("Key: share of the area within 3 m outside the walls"),
+            Map::Leakage => {
+                tr("Key: share of the area outside the walls, within 3 m of the plan's edge")
+            }
             _ => tr("Key: share of the floor at each level or better"),
         };
         ui.label(egui::RichText::new(key).color(TOKENS.text_dim).small());
@@ -976,7 +1002,11 @@ impl eframe::App for App {
             .resizable(true)
             .default_size(300.0)
             .max_size(380.0)
-            .show(ui, |ui| self.routers_panel(ui));
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("routers")
+                    .show(ui, |ui| self.routers_panel(ui));
+            });
         egui::CentralPanel::default().show(ui, |ui| self.plan_view(ui));
     }
 }

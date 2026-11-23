@@ -136,8 +136,9 @@ impl Channel {
 pub const HEARD_DBM: f64 = -82.0;
 
 /// The receiver minimum input sensitivity at 20 MHz for MCS 0 to 9 (dBm), from the IEEE 802.11
-/// standard's VHT table (802.11-2020, Table 21-25; HE uses the same values for these MCS). Each
-/// doubling of the width needs 3 dB more.
+/// standard's VHT table (802.11-2020, Table 21-25), used here for HE (802.11ax) as well; MCS 10
+/// and 11 are left out until checked against the HE table. Each doubling of the width needs
+/// 3 dB more.
 const SENSITIVITY_20: [f64; 10] = [
     -82.0, -79.0, -77.0, -74.0, -70.0, -66.0, -65.0, -64.0, -59.0, -57.0,
 ];
