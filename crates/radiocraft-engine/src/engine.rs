@@ -2211,7 +2211,7 @@ impl Engine {
             .filter_map(|(k, v)| v.map(|v| (k.to_string(), v)))
             .collect();
             if !self.survey.is_empty() {
-                let rows_m = self.survey_terms();
+                let rows_m = self.survey_terms(false);
                 let e = Self::errors_json(&rows_m);
                 if let (Some(n), Some(mean), Some(rms)) = (
                     e[band.name()]["points"].as_u64(),
@@ -2393,7 +2393,9 @@ impl Engine {
     /// (the one it names, or the strongest predicted), and that router's predicted signal and
     /// fit terms. Points naming a router that isn't there, or with no router in their band, are
     /// left out.
-    fn survey_terms(&mut self) -> Vec<(usize, f64, f64, survey::Term)> {
+    /// Each measured point compared: its index, measured and predicted signal, and its terms for
+    /// the fit. `crossings_too`: list the walls each path counts (only calibration needs them).
+    fn survey_terms(&mut self, crossings_too: bool) -> Vec<(usize, f64, f64, survey::Term)> {
         let Some(walls) = self.building() else {
             return Vec::new();
         };
@@ -2449,7 +2451,9 @@ impl Engine {
                 + walls.loss(from, to, pt.band, &mut scratch);
             // The walls a calibration can fit: those of a preset (guessed ones too).
             crossings.clear();
-            walls.crossings(from, to, pt.band, &mut scratch, &mut crossings);
+            if crossings_too {
+                walls.crossings(from, to, pt.band, &mut scratch, &mut crossings);
+            }
             let crossed = crossings
                 .iter()
                 .filter_map(|(name, loss)| preset_key(name).map(|k| (k, *loss)))
@@ -2498,7 +2502,7 @@ impl Engine {
         if self.plan.is_none() {
             return Err(bad(command, "no plan is open (plan.open)"));
         }
-        let rows = self.survey_terms();
+        let rows = self.survey_terms(false);
         let round = |v: f64| (v * 10.0).round() / 10.0;
         let mut out = json!({
             "points": self.survey.len(),
@@ -2521,7 +2525,7 @@ impl Engine {
                 "no measured points (survey.import or survey.add)",
             ));
         }
-        let before = self.survey_terms();
+        let before = self.survey_terms(true);
         if before.is_empty() {
             return Err(bad(
                 command,
@@ -2595,7 +2599,7 @@ impl Engine {
         set(self, exponent, offsets, &fitted);
         // A new loss can change which of two overlapping walls counts: count the crossings with
         // the fitted losses and, if they changed, fit once more from there.
-        let mut after = self.survey_terms();
+        let mut after = self.survey_terms(true);
         let same = |a: &[(usize, f64, f64, survey::Term)],
                     b: &[(usize, f64, f64, survey::Term)]| {
             a.len() == b.len()
@@ -2617,7 +2621,7 @@ impl Engine {
                 self.settings = saved.clone();
                 set(self, f.exponent, f.offsets, &f.losses);
                 (exponent, offsets, fitted, clamped) = (f.exponent, f.offsets, f.losses, f.clamped);
-                let next = self.survey_terms();
+                let next = self.survey_terms(true);
                 crossings_changed = !same(&after, &next);
                 after = next;
             }

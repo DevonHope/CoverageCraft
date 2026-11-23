@@ -1492,6 +1492,7 @@ fn calibration_finds_wall_losses() {
     };
     let mut e = open(&survey(0.0), "exact.csv");
     assert!(e.survey().len() > 200, "{}", e.survey().len());
+    let history = run(&mut e, "edit.history", json!({}));
     let fit = run(&mut e, "survey.calibrate", json!({}));
     let wall = |fit: &Value, m: &str| {
         fit["walls"]
@@ -1539,6 +1540,8 @@ fn calibration_finds_wall_losses() {
             .all(|w| w["status"] == "kept"),
         "{plain}"
     );
+    // Looking at a fit isn't an edit.
+    assert_eq!(run(&mut e, "edit.history", json!({})), history);
     // Applying is one step, undone in one.
     run(&mut e, "survey.calibrate", json!({"apply": true}));
     let got = e.settings().loss_db.get("concrete").copied().unwrap();
