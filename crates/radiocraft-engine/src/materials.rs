@@ -152,6 +152,30 @@ pub fn rf_preset(id: &str) -> Option<&'static RfPreset> {
 }
 
 /// The preset whose losses are exactly `loss`, if one is.
+/// Calibrated losses in place of presets' own, per band (dB), by preset id: what fitting the
+/// model to measured points found for the walls of this building.
+pub type LossOverrides = std::collections::BTreeMap<String, [Option<f64>; 3]>;
+
+/// A preset's loss, with any calibrated value in its place.
+pub fn preset_loss(id: &str, overrides: &LossOverrides) -> RfLoss {
+    let mut loss = rf_preset(id).map(|p| p.loss).unwrap_or(RfLoss([0.0; 3]));
+    if let Some(o) = overrides.get(id) {
+        for (slot, v) in loss.0.iter_mut().zip(o) {
+            if let Some(v) = v {
+                *slot = *v;
+            }
+        }
+    }
+    loss
+}
+
+/// The preset a wall's material name stands for (`concrete`, `concrete (guessed)`); none for a
+/// custom loss.
+pub fn preset_key(name: &str) -> Option<&'static str> {
+    let base = name.strip_suffix(" (guessed)").unwrap_or(name);
+    RF_PRESETS.iter().find(|p| p.id == base).map(|p| p.id)
+}
+
 pub fn rf_preset_of(loss: &RfLoss) -> Option<&'static RfPreset> {
     RF_PRESETS.iter().find(|p| p.loss == *loss)
 }

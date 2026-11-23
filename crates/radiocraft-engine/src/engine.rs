@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::devices::{self, Device, EIRP_CAP_DBM};
 use crate::dxf::read_dxf;
 use crate::floors::{Floor, MAX_FLOORS, slab_db};
-use crate::materials::{Band, Material, RF_PRESETS};
+use crate::materials::{Band, LossOverrides, MAX_LOSS_DB, Material, RF_PRESETS, rf_preset};
 use crate::mesh::{Up, read_mesh};
 use crate::model::{self, Cell, Emitter, Grid, Model, Scratch, WallMap};
 use crate::model::{Building, Storey};
@@ -95,6 +95,8 @@ pub struct Settings {
     /// Which way the plan is looked at: `top`, `front`… or `view:<name>` (a model's saved view,
     /// a drawing's named view).
     pub viewpoint: String,
+    /// Calibrated wall losses in place of the presets' own (dB, per band, by preset id).
+    pub loss_db: LossOverrides,
 }
 
 impl Default for Settings {
@@ -112,6 +114,7 @@ impl Default for Settings {
             client_streams: 2,
             offset_db: [0.0; 3],
             viewpoint: "top".into(),
+            loss_db: LossOverrides::new(),
         }
     }
 }
@@ -336,7 +339,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "settings.set",
-        "{band?: 2.4|5|6, view?: signal|second|serving|overlap|rate|leakage, viewpoint?: top|bottom|front|back|left|right|view:<name> (plan.info lists the plan's), client_streams?: 1-4, offset_db?: {band: dB}, grid_step?, client_height?, exponent?, slice_height?, cap_eirp?, close_gaps?, up?}",
+        "{band?: 2.4|5|6, view?: signal|second|serving|overlap|rate|leakage, viewpoint?: top|bottom|front|back|left|right|view:<name> (plan.info lists the plan's), client_streams?: 1-4, offset_db?: {band: dB}, loss_db?: {preset id: {band: dB|null}|null} ({} clears; calibrated wall losses), grid_step?, client_height?, exponent?, slice_height?, cap_eirp?, close_gaps?, up?}",
     ),
 ];
 
@@ -421,6 +424,54 @@ fn band_map(values: &[Option<f64>; 3]) -> Value {
         }
     }
     Value::Object(m)
+}
+
+/// `loss_db`: `{id: {band: dB or null}}` merged in, `{id: null}` clears a preset's, `{}` clears
+/// them all.
+fn loss_db_param(command: &str, v: &Value, out: &mut LossOverrides) -> Result<()> {
+    const SHAPE: &str = "`loss_db` is {preset id: {\"2.4\", \"5\", \"6\": dB}}";
+    let m = v.as_object().ok_or_else(|| bad(command, SHAPE))?;
+    if m.is_empty() {
+        out.clear();
+        return Ok(());
+    }
+    let mut next = out.clone();
+    for (k, v) in m {
+        let id = rf_preset(k)
+            .map(|p| p.id)
+            .ok_or_else(|| bad(command, format!("no material preset `{k}`")))?;
+        if v.is_null() {
+            next.remove(id);
+            continue;
+        }
+        let bands = v.as_object().ok_or_else(|| bad(command, SHAPE))?;
+        let mut entry = next.get(id).copied().unwrap_or([None; 3]);
+        for (b, x) in bands {
+            let band = Band::parse(b)
+                .ok_or_else(|| bad(command, "`loss_db` bands are \"2.4\", \"5\" and \"6\""))?;
+            let x = if x.is_null() {
+                None
+            } else {
+                Some(
+                    x.as_f64()
+                        .filter(|x| x.is_finite() && (0.0..=MAX_LOSS_DB).contains(x))
+                        .ok_or_else(|| {
+                            bad(command, format!("a wall loss is 0 to {MAX_LOSS_DB} dB"))
+                        })?,
+                )
+            };
+            if let Some(slot) = entry.get_mut(band.index()) {
+                *slot = x;
+            }
+        }
+        if entry.iter().all(Option::is_none) {
+            next.remove(id);
+        } else {
+            next.insert(id.to_string(), entry);
+        }
+    }
+    *out = next;
+    Ok(())
 }
 
 fn channels_param(
@@ -525,6 +576,7 @@ impl Engine {
         self.field = None;
         if walls_too {
             self.walls = None;
+            self.floor_walls.clear();
         }
     }
 
@@ -792,7 +844,7 @@ impl Engine {
         {
             return w.clone();
         }
-        let w = Arc::new(plan.walls());
+        let w = Arc::new(plan.walls_with(&self.settings.loss_db));
         if let Some(slot) = self.floor_walls.get_mut(i) {
             *slot = Some((key, w.clone()));
         }
@@ -1530,6 +1582,9 @@ impl Engine {
                 }
             }
         }
+        if let Some(v) = p.get("loss_db").filter(|v| !v.is_null()) {
+            loss_db_param(command, v, &mut s.loss_db)?;
+        }
         if let Some(v) = ranged(command, p, "client_streams", 1.0, 4.0)? {
             if v.fract() != 0.0 {
                 return Err(bad(command, "`client_streams` is 1, 2, 3 or 4"));
@@ -1627,6 +1682,7 @@ impl Engine {
             "view": s.view.id(),
             "client_streams": s.client_streams,
             "offset_db": band_map(&s.offset_db.map(Some)),
+            "loss_db": s.loss_db.iter().map(|(id, l)| (id.clone(), band_map(l))).collect::<serde_json::Map<_, _>>(),
             "viewpoint": s.viewpoint,
             "grid_step": s.grid_step,
             "client_height": s.client_height,
@@ -1678,7 +1734,8 @@ impl Engine {
     /// The walls of the open plan, built once until a material or the plan changes.
     pub fn walls(&mut self) -> Option<Arc<WallMap>> {
         if self.walls.is_none() {
-            self.walls = self.plan.as_ref().map(|p| Arc::new(p.walls()));
+            let o = &self.settings.loss_db;
+            self.walls = self.plan.as_ref().map(|p| Arc::new(p.walls_with(o)));
         }
         self.walls.clone()
     }

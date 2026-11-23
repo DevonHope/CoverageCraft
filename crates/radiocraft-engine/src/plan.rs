@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::materials::{
-    CONCRETE_FROM_MM, Material, RfLoss, guess_material, heuristic_loss, rf_preset,
+    CONCRETE_FROM_MM, LossOverrides, Material, RfLoss, guess_material, heuristic_loss, preset_loss,
 };
 use crate::model::{WallMap, WallRegion};
 
@@ -151,6 +151,12 @@ impl FloorPlan {
     /// The walls the plan makes with its sources' materials: ignored sources left out, strokes
     /// widened to strips, guessed walls split thin and thick where paths cross them.
     pub fn walls(&self) -> WallMap {
+        self.walls_with(&LossOverrides::new())
+    }
+
+    /// As [`FloorPlan::walls`], with calibrated losses in place of the presets' own (guessed
+    /// walls too).
+    pub fn walls_with(&self, overrides: &LossOverrides) -> WallMap {
         let mut materials: Vec<(String, RfLoss)> = Vec::new();
         let mut index = |name: String, loss: RfLoss| -> usize {
             match materials.iter().position(|(n, l)| *n == name && *l == loss) {
@@ -161,8 +167,12 @@ impl FloorPlan {
                 }
             }
         };
-        let (thin_id, thin_loss) = heuristic_loss(0.0);
-        let (thick_id, thick_loss) = heuristic_loss(CONCRETE_FROM_MM);
+        let (thin_id, _) = heuristic_loss(0.0);
+        let (thick_id, _) = heuristic_loss(CONCRETE_FROM_MM);
+        let (thin_loss, thick_loss) = (
+            preset_loss(thin_id, overrides),
+            preset_loss(thick_id, overrides),
+        );
         let mut regions = Vec::new();
         for s in &self.shapes {
             let Some(src) = self.sources.get(s.source) else {
@@ -190,7 +200,7 @@ impl FloorPlan {
                             .map(|r| r.guessed(thin, thick, CONCRETE_FROM_MM))
                     }
                     Material::Preset(id) => {
-                        let loss = rf_preset(id).map(|p| p.loss).unwrap_or(RfLoss([0.0; 3]));
+                        let loss = preset_loss(id, overrides);
                         WallRegion::new(rings, index((*id).to_string(), loss), src.name.clone())
                     }
                     Material::Custom(loss) => WallRegion::new(

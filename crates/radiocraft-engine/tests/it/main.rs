@@ -1316,3 +1316,96 @@ fn hostile_commands_are_refused() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Calibrated wall losses replace the presets' own on every floor, guessed walls too; undo puts
+/// them back, a project keeps them, and bad values are refused.
+#[test]
+fn calibrated_wall_losses_apply_on_every_floor() {
+    let dir = std::env::temp_dir().join(format!("radiocraft-losses-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (ground, upper) = (dir.join("ground.dxf"), dir.join("upper.dxf"));
+    std::fs::write(&ground, room_dxf(0.0)).unwrap();
+    std::fs::write(&upper, room_dxf(0.0)).unwrap();
+    let mut e = Engine::new();
+    run(
+        &mut e,
+        "plan.open",
+        json!({"path": ground.to_string_lossy()}),
+    );
+    run(&mut e, "floor.add", json!({"name": "Upstairs"}));
+    run(
+        &mut e,
+        "plan.open",
+        json!({"path": upper.to_string_lossy()}),
+    );
+    // Upstairs, outside its room, high: the path down to the ground room's middle crosses the
+    // upper room's (guessed) wall, then the slab, and no wall downstairs.
+    run(
+        &mut e,
+        "router.add",
+        json!({"at": [8000, 3000], "height": 2900, "eirp_dbm": 20, "name": "Up"}),
+    );
+    run(&mut e, "floor.select", json!({"index": 0}));
+    let probe = |e: &mut Engine| {
+        run(e, "coverage.at", json!({"at": [3000, 3000]}))["bands"]["5"]["rssi_dbm"]
+            .as_f64()
+            .unwrap()
+    };
+    let set = |e: &mut Engine, db: f64| {
+        run(
+            e,
+            "settings.set",
+            json!({"loss_db": {"drywall": {"5": db}, "concrete": {"5": db}}}),
+        )
+    };
+    let preset = probe(&mut e);
+    let s = set(&mut e, 30.0);
+    assert_eq!(s["loss_db"]["concrete"], json!({"5": 30.0}), "{s}");
+    let at30 = probe(&mut e);
+    set(&mut e, 10.0);
+    let at10 = probe(&mut e);
+    assert!((at10 - at30 - 20.0).abs() < 0.11, "{at10} vs {at30}");
+    assert_ne!(preset, at10);
+    run(&mut e, "edit.undo", json!({}));
+    assert_eq!(probe(&mut e), at30);
+    // Kept in the project.
+    let project = dir.join("p.rcraft");
+    run(
+        &mut e,
+        "project.save",
+        json!({"path": project.to_string_lossy()}),
+    );
+    let mut again = Engine::new();
+    run(
+        &mut again,
+        "project.open",
+        json!({"path": project.to_string_lossy()}),
+    );
+    assert_eq!(again.settings().loss_db, e.settings().loss_db);
+    run(&mut again, "floor.select", json!({"index": 0}));
+    assert_eq!(probe(&mut again), at30);
+    // One preset cleared, then all; the presets' own losses again.
+    let s = run(
+        &mut e,
+        "settings.set",
+        json!({"loss_db": {"drywall": null}}),
+    );
+    assert!(s["loss_db"].get("drywall").is_none(), "{s}");
+    run(&mut e, "settings.set", json!({"loss_db": {}}));
+    assert!(e.settings().loss_db.is_empty());
+    assert_eq!(probe(&mut e), preset);
+    // Refused, changing nothing.
+    for bad in [
+        json!({"loss_db": {"unobtainium": {"5": 3}}}),
+        json!({"loss_db": {"concrete": {"5": -1}}}),
+        json!({"loss_db": {"concrete": {"5": 101}}}),
+        json!({"loss_db": {"concrete": {"7": 3}}}),
+        json!({"loss_db": {"concrete": {"5": "x"}}}),
+        json!({"loss_db": {"concrete": 3}}),
+        json!({"loss_db": [1]}),
+    ] {
+        assert!(e.execute("settings.set", &bad).is_err(), "{bad}");
+    }
+    assert!(e.settings().loss_db.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
