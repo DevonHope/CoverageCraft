@@ -1,0 +1,21 @@
+[package]
+name = "radiocraft-engine"
+description = "RadioCraft's engine: floor plans from DXF and meshes, materials, routers and the coverage model, run as commands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+craft-dxf = { workspace = true }
+craft-mesh = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+png = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"

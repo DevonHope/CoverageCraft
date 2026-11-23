@@ -1,0 +1,7 @@
+/target
+/plan
+*.png
+!docs/**/*.png
+.claude/
+# Machine-local Cargo settings (the build folder lives outside this synced folder).
+/.cargo/config.toml

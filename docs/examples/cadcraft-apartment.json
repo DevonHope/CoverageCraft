@@ -1,0 +1,7 @@
+{"commands": [
+ {"command": "plan.open", "params": {"path": "tests/fixtures/cadcraft-apartment.dxf"}},
+ {"command": "material.set", "params": {"source": "A-WALL", "material": "concrete"}},
+ {"command": "material.set", "params": {"source": "A-GLAZ", "material": "low-e-glass"}},
+ {"command": "router.add", "params": {"at": [1200, 1200], "height": 900, "device": "generic-router", "name": "Living room"}},
+ {"command": "settings.set", "params": {"band": "5"}}
+]}
