@@ -53,7 +53,8 @@ see [What the numbers mean](#what-the-numbers-mean).
   given the routers already there; repeat for more.
 - **Suggest channels.** Pick a channel for each router in the shown band so that as much of the
   floor as possible hears no other router on an overlapping channel (the Same-channel map's
-  rule), on every floor. Each router keeps its width; channels marked keep stay. Shown router by
+  rule), on every floor. Each router keeps its width (and `channel.suggest` leaves the routers
+in its `keep` list alone). Shown router by
   router, with the share of the floor before and after, before anything changes; Apply is one
   undo step. The channels it picks from: 1, 6 and 11 on 2.4 GHz; 36–48 and 149–165 on 5 GHz, with
   the DFS channels 52–144 when you allow them; the preferred scanning channels on 6 GHz. Which
