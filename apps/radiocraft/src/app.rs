@@ -13,6 +13,8 @@ use serde_json::{Value, json};
 use crate::i18n::tr;
 use crate::theme::{TOKENS, wall_colour};
 
+#[path = "calibration.rs"]
+mod calibration;
 #[path = "header.rs"]
 mod header;
 
@@ -70,6 +72,9 @@ pub struct App {
     pending: Option<Pending>,
     /// The floor name being typed: the floor and the text so far.
     floor_name: Option<(usize, String)>,
+    /// A calibration worked out but not applied: the engine's revision it was made at, and the
+    /// fit.
+    calibration: Option<(u64, Value)>,
 }
 
 /// A file waiting for SolidCraft to export its design.
@@ -136,6 +141,7 @@ impl App {
             pointer: None,
             pending: None,
             floor_name: None,
+            calibration: None,
         };
         if let Some(path) = path {
             app.open(&path);
@@ -176,8 +182,17 @@ impl App {
                         .unwrap_or_default()
                         .to_string();
                     let params = step.get("params").cloned().unwrap_or(json!({}));
-                    if self.run(&command, params).is_none() {
+                    let preview = command == "survey.calibrate"
+                        && !params
+                            .get("apply")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                    let Some(r) = self.run(&command, params) else {
                         break;
+                    };
+                    // A calibration not applied is shown, as Calibrate… shows it.
+                    if preview {
+                        self.calibration = Some((self.engine.revision(), r));
                     }
                 }
                 self.slice = self.engine.settings().slice_height;
@@ -840,28 +855,22 @@ impl App {
             }
             ui.horizontal(|ui| {
                 if ui
-                    .button(tr("Calibrate"))
+                    .button(tr("Calibrate…"))
                     .on_hover_text(tr(
-                        "Fit the path-loss exponent and each band's offset to the measured points",
+                        "Fit the path-loss exponent, each band's offset and the losses of walls enough points are measured through, and show the fit before using it",
                     ))
                     .clicked()
-                    && let Some(r) = self.run("survey.calibrate", json!({"apply": true}))
+                    && let Some(r) = self.run("survey.calibrate", json!({}))
                 {
-                    self.status = Some((
-                        format!(
-                            "{} {} · {}",
-                            tr("Calibrated: exponent"),
-                            r["exponent"],
-                            r["offset_db"]
-                        ),
-                        false,
-                    ));
+                    self.calibration = Some((self.engine.revision(), r));
                 }
                 if ui.button(tr("Clear")).clicked() {
                     self.run("survey.clear", json!({}));
                 }
             });
+            self.calibration_section(ui);
         }
+        self.wall_losses_section(ui);
         ui.add_space(6.0);
         let key = match c.view {
             Map::Serving | Map::Overlap => tr("Key: share of the floor"),

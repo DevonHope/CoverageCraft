@@ -2319,6 +2319,29 @@ impl Engine {
                         .collect::<Vec<_>>()
                         .join(", "),
                 ),
+                (
+                    "Calibrated wall losses".into(),
+                    if s.loss_db.is_empty() {
+                        "none (the materials' own)".into()
+                    } else {
+                        s.loss_db
+                            .iter()
+                            .map(|(id, l)| {
+                                let bands: Vec<String> = Band::ALL
+                                    .iter()
+                                    .filter_map(|b| {
+                                        l.get(b.index())
+                                            .copied()
+                                            .flatten()
+                                            .map(|v| format!("{} GHz {v:.1} dB", b.name()))
+                                    })
+                                    .collect();
+                                format!("{id}: {}", bands.join(", "))
+                            })
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    },
+                ),
             ],
             bands,
         };
@@ -2553,7 +2576,11 @@ impl Engine {
                     *slot = o;
                 }
             }
-            for w in losses {
+            // A loss that comes out where it was isn't kept as a calibrated one.
+            for w in losses
+                .iter()
+                .filter(|w| (w.value * 10.0).round() != (w.prior * 10.0).round())
+            {
                 let entry = e
                     .settings
                     .loss_db

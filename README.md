@@ -51,7 +51,9 @@ see [What the numbers mean](#what-the-numbers-mean).
 - **Suggest a spot.** Place a router where it raises the floor at −67 dBm or better the most,
   given the routers already there; repeat for more.
 - **Measurements.** Read measured points (CSV or JSON), see how far the prediction is from them,
-  and calibrate: fit the path-loss exponent and a per-band offset to them.
+  and calibrate: fit the path-loss exponent, a per-band offset and the losses of the walls enough
+  points are measured through to them. Calibrate… shows the fit before it is used: each wall's
+  loss before and after, and the error before, after and on points left out of the fit.
 - **Reports.** One HTML page with every band's figures and maps, the routers, the walls and the
   settings; print it to PDF from a browser.
 - **Projects.** Save the materials, routers, channels, measurements and settings as a `.rcraft`
@@ -121,6 +123,16 @@ Positions in millimetres on the plan, the signal in dBm, and optionally the rout
 measured from (otherwise the strongest one). `docs/examples/survey-synthetic.csv` is made up (a
 known model plus noise) to try it on the CADCraft example: calibrating finds an exponent near 3.
 
+Calibrating wall losses: a material's loss in a band is fitted only when at least 5 points are
+measured through it, and not all through it alike (that would be the offset's job); the others
+keep their loss. Fitted losses are held toward their current values, so a few points move them
+little, and stay within 0–60 dB. They are the project's own, from its measurements: the
+materials' presets don't change, and Reset (or `settings.set {"loss_db": {}}`) puts them back.
+The fit is linear least squares, counted again once with the fitted losses (where two walls
+overlap, a new loss can change which counts). The error on points left out (each fifth of the
+points predicted by a fit to the rest) says how it will do at places not measured; when it is
+worse than the model as it was, RadioCraft says so.
+
 `radiocraft-cli commands` lists every command and its parameters. A script is
 `{"commands": [{"command": "...", "params": {...}}, ...]}`, run in order; the window takes the
 same file with `--script` (and `--screenshot out.png` to save a picture of the window and quit).
@@ -166,7 +178,9 @@ real signal is often a few dB either side. Use it to compare placements, then ch
 Known limits:
 
 - Floors: slabs are uniform (no stairwells, shafts or openings in them unless the whole slab is
-  "none"), and calibration fits the walls' model, not the slabs' loss.
+  "none"), and calibration fits walls' losses, not the slabs'.
+- Where walls overlap the larger loss counts, so a window drawn over an unbroken wall outline
+  counts as wall, and its glass can't be calibrated.
 
 - A SolidCraft design opens through the installed SolidCraft. In the window SolidCraft exports it
   in the background (the status bar shows it, with Cancel); the CLI and scripts wait for it. An
