@@ -1,5 +1,7 @@
 # RadioCraft (beta)
 
+<img src="assets/icon.svg" alt="RadioCraft's logo: a router sending out rings of signal in the heatmap's colours, which turn weaker where they have passed the corner of a wall" width="128">
+
 RadioCraft plans Wi-Fi coverage from the floor plans and models you already have. Open a DXF plan
 from CADCraft, or an OBJ or STL model exported from SolidCraft. Tell it what each layer or object
 is made of, place routers and access points, and see the predicted signal across the floor.

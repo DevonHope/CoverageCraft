@@ -7,3 +7,4 @@
 | `docs/screenshot.png` | A screenshot of RadioCraft with the CADCraft fixture above open | MIT OR Apache-2.0 (the plan in it: Apache-2.0) | 2026-11-22 | Made by this project |
 | `docs/examples/survey-synthetic.csv` | Made by this project: synthetic, from RadioCraft's own model of the CADCraft fixture (exponent 3.0, offsets +2 dB at 2.4 GHz and −4 dB at 5 GHz) plus ±2 dB noise; not a measurement | MIT OR Apache-2.0 | 2026-11-22 | For trying measured points and calibration |
 | `docs/examples/cadcraft-apartment.json` | Made by this project: a command script for the CADCraft fixture | MIT OR Apache-2.0 | 2026-11-22 | |
+| `assets/icon.svg`, `assets/icon-1024.png` | Made by this project: drawn by `crates/radiocraft-engine/src/icon.rs` (`radiocraft-cli icon`), an original design | MIT OR Apache-2.0 | 2026-11-22 | The app's logo; regenerate both from the code, don't edit them by hand |

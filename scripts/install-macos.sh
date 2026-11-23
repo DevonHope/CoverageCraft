@@ -50,6 +50,15 @@ rm -rf "$NEW"
 mkdir -p "$NEW/Contents/MacOS" "$NEW/Contents/Resources"
 cp "$BIN/radiocraft" "$BIN/radiocraft-cli" "$NEW/Contents/MacOS/"
 echo "$COMMIT" > "$NEW/Contents/Resources/commit.txt"
+# The app icon, drawn by the same code as the window's icon and assets/icon.svg.
+ICONSET=$(mktemp -d)/RadioCraft.iconset
+mkdir -p "$ICONSET"
+for s in 16 32 128 256 512; do
+    "$BIN/radiocraft-cli" icon "$ICONSET/icon_${s}x${s}.png" "$s" >/dev/null
+    "$BIN/radiocraft-cli" icon "$ICONSET/icon_${s}x${s}@2x.png" "$((s * 2))" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$NEW/Contents/Resources/RadioCraft.icns"
+rm -rf "$(dirname "$ICONSET")"
 cat > "$NEW/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -59,6 +68,7 @@ cat > "$NEW/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key><string>RadioCraft</string>
     <key>CFBundleIdentifier</key><string>local.radiocraft.beta</string>
     <key>CFBundleExecutable</key><string>radiocraft</string>
+    <key>CFBundleIconFile</key><string>RadioCraft</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$COMMIT</string>
@@ -71,6 +81,8 @@ PLIST
 codesign --force --deep --sign - "$NEW" >/dev/null 2>&1 || true
 rm -rf "$DEST/RadioCraft.app"
 mv "$NEW" "$DEST/RadioCraft.app"
+# Tell Finder and the Dock the app (and its icon) changed.
+touch "$DEST/RadioCraft.app"
 echo "== installed $DEST/RadioCraft.app ($VERSION, $COMMIT)"
 if command -v osascript >/dev/null 2>&1; then
     osascript -e "display notification \"Build $COMMIT installed\" with title \"RadioCraft updated\"" >/dev/null 2>&1 || true

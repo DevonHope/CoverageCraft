@@ -24,7 +24,12 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("RadioCraft")
             .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([720.0, 480.0]),
+            .with_min_inner_size([720.0, 480.0])
+            .with_icon(std::sync::Arc::new(egui::IconData {
+                rgba: radiocraft_engine::icon::rgba(256),
+                width: 256,
+                height: 256,
+            })),
         ..Default::default()
     };
     eframe::run_native(
