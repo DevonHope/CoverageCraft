@@ -1,21 +1,21 @@
-//! `radiocraft-cli`: RadioCraft without a window. It runs the same commands as the app.
+//! `coveragecraft-cli`: CoverageCraft without a window. It runs the same commands as the app.
 //!
-//! - `radiocraft-cli commands`: list the commands.
-//! - `radiocraft-cli exec <command> [json]`: run one command on an empty session.
-//! - `radiocraft-cli script <script.json>`: run `{"commands": [{"command", "params"}...]}` in order.
-//! - `radiocraft-cli plan <plan.dxf|.obj|.stl|.sc> [options]`: open a plan, place routers, report.
+//! - `coveragecraft-cli commands`: list the commands.
+//! - `coveragecraft-cli exec <command> [json]`: run one command on an empty session.
+//! - `coveragecraft-cli script <script.json>`: run `{"commands": [{"command", "params"}...]}` in order.
+//! - `coveragecraft-cli plan <plan.dxf|.obj|.stl|.sc> [options]`: open a plan, place routers, report.
 
 use std::process::ExitCode;
 
-use radiocraft_engine::{COMMANDS, Engine};
+use coveragecraft_engine::{COMMANDS, Engine};
 use serde_json::{Value, json};
 
 const USAGE: &str = "usage:
-  radiocraft-cli commands
-  radiocraft-cli exec <command> [json-params]
-  radiocraft-cli script <script.json>
-  radiocraft-cli plan <plan.dxf|.obj|.stl|.sc> [--router x,y[,height]]... [--device id | --eirp dBm] [--devices file.json]
-                      [--band 2.4|5|6] [--slice mm] [--viewpoint top|front|…|view:<name>] [--material source=material]... [--png out.png] [--save project.rcraft]";
+  coveragecraft-cli commands
+  coveragecraft-cli exec <command> [json-params]
+  coveragecraft-cli script <script.json>
+  coveragecraft-cli plan <plan.dxf|.obj|.stl|.sc> [--router x,y[,height]]... [--device id | --eirp dBm] [--devices file.json]
+                      [--band 2.4|5|6] [--slice mm] [--viewpoint top|front|…|view:<name>] [--material source=material]... [--png out.png] [--save project.coveragecraft]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -28,7 +28,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("radiocraft-cli: {e}");
+            eprintln!("coveragecraft-cli: {e}");
             ExitCode::FAILURE
         }
     }

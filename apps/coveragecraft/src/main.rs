@@ -1,4 +1,4 @@
-//! RadioCraft: plan Wi-Fi coverage on floor plans from CADCraft and models from SolidCraft.
+//! CoverageCraft: plan Wi-Fi coverage on floor plans from CADCraft and models from SolidCraft.
 
 mod app;
 mod captions;
@@ -8,7 +8,7 @@ mod theme;
 use craft_window::Prefix;
 use craft_window::policy::{Backend, Frame, TitleBarPref, apply, decide_for};
 
-const USAGE: &str = "usage: radiocraft [plan.dxf|plan.dwg|design.sc|model.obj|model.stl|project.rcraft] [--script commands.json] [--screenshot out.png]";
+const USAGE: &str = "usage: coveragecraft [plan.dxf|plan.dwg|design.sc|model.obj|model.stl|project.coveragecraft] [--script commands.json] [--screenshot out.png]";
 
 fn main() -> eframe::Result {
     let (mut path, mut script, mut screenshot) = (None, None, None);
@@ -27,9 +27,9 @@ fn main() -> eframe::Result {
     // The title bar every Craft app wears, as craft-window decides it: on macOS the app's bar sits
     // under the window buttons (Inset); on Windows and most Linux desktops the app's bar is the
     // title bar and draws the desktop's window buttons (Integrated); tiling desktops and
-    // RADIOCRAFT_TITLEBAR=system keep the system's.
+    // COVERAGECRAFT_TITLEBAR=system keep the system's.
     let mut decision = decide_for(
-        Prefix::new("RADIOCRAFT"),
+        Prefix::new("COVERAGECRAFT"),
         Backend::from_env(),
         TitleBarPref::Integrated,
     );
@@ -49,7 +49,7 @@ fn main() -> eframe::Result {
     };
     let viewport = apply(
         egui::ViewportBuilder::default()
-            .with_title("RadioCraft")
+            .with_title("CoverageCraft")
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([720.0, 480.0])
             .with_icon(std::sync::Arc::new(icon())),
@@ -60,7 +60,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "RadioCraft",
+        "CoverageCraft",
         options,
         Box::new(move |_cc| {
             #[allow(unused_mut)]
@@ -72,7 +72,7 @@ fn main() -> eframe::Result {
                     &_cc.egui_ctx,
                     &craft_menu::mac_layout(
                         &app.menu_model(),
-                        &craft_menu::LayoutOptions::new("RadioCraft"),
+                        &craft_menu::LayoutOptions::new("CoverageCraft"),
                     )
                     .bar,
                 );

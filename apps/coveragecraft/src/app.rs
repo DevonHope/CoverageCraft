@@ -2,12 +2,12 @@
 //! materials on the left, the routers and the coverage figures on the right. Every change goes
 //! through an engine command, so the CLI can do anything the window does.
 
+use coveragecraft_engine::materials::{Band, RF_PRESETS};
+use coveragecraft_engine::radio::{self, View as Map};
+use coveragecraft_engine::{Engine, Power};
 use egui::{
     Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2,
 };
-use radiocraft_engine::materials::{Band, RF_PRESETS};
-use radiocraft_engine::radio::{self, View as Map};
-use radiocraft_engine::{Engine, Power};
 use serde_json::{Value, json};
 
 use crate::i18n::tr;
@@ -83,7 +83,7 @@ struct Pending {
     open: String,
     /// The design SolidCraft is exporting.
     design: String,
-    done: std::sync::mpsc::Receiver<Result<radiocraft_engine::sc::Converted, String>>,
+    done: std::sync::mpsc::Receiver<Result<coveragecraft_engine::sc::Converted, String>>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     started: std::time::Instant,
     thread: std::thread::JoinHandle<()>,
@@ -247,8 +247,8 @@ impl App {
                     .map_err(|e| e.to_string())
             })();
             match written.and_then(|()| std::fs::write(&path, &bytes).map_err(|e| e.to_string())) {
-                Ok(()) => eprintln!("radiocraft: saved {path}"),
-                Err(e) => eprintln!("radiocraft: {path}: {e}"),
+                Ok(()) => eprintln!("coveragecraft: saved {path}"),
+                Err(e) => eprintln!("coveragecraft: {path}: {e}"),
             }
             self.screenshot = None;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -263,7 +263,7 @@ impl App {
         let lower = path.to_ascii_lowercase();
         let design = if lower.ends_with(".sc") {
             Some(path.to_string())
-        } else if lower.ends_with(".rcraft") {
+        } else if is_project(&lower) {
             std::fs::read(path)
                 .ok()
                 .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
@@ -289,7 +289,7 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("solidcraft-export".into())
             .spawn(move || {
-                let _ = tx.send(radiocraft_engine::sc::convert_with(
+                let _ = tx.send(coveragecraft_engine::sc::convert_with(
                     std::path::Path::new(&file),
                     &flag,
                 ));
@@ -325,7 +325,7 @@ impl App {
                         }
                         self.open_now(&p.open);
                     }
-                    Err(e) if e == radiocraft_engine::sc::CANCELLED => {
+                    Err(e) if e == coveragecraft_engine::sc::CANCELLED => {
                         self.status = Some((tr("Opening cancelled"), false));
                     }
                     Err(e) => self.status = Some((format!("{}: {e}", p.design), true)),
@@ -342,7 +342,7 @@ impl App {
     }
 
     fn open_now(&mut self, path: &str) {
-        let command = if path.to_ascii_lowercase().ends_with(".rcraft") {
+        let command = if is_project(&path.to_ascii_lowercase()) {
             "project.open"
         } else {
             "plan.open"
@@ -365,7 +365,7 @@ impl App {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 tr("Plans, models and projects"),
-                &["dxf", "dwg", "sc", "obj", "stl", "rcraft"],
+                &["dxf", "dwg", "sc", "obj", "stl", "coveragecraft", "rcraft"],
             )
             .pick_file()
         {
@@ -375,8 +375,8 @@ impl App {
 
     fn save_dialog(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter(tr("RadioCraft project"), &["rcraft"])
-            .set_file_name("plan.rcraft")
+            .add_filter(tr("CoverageCraft project"), &["coveragecraft"])
+            .set_file_name("plan.coveragecraft")
             .save_file()
             && self
                 .run("project.save", json!({"path": path.to_string_lossy()}))
@@ -753,7 +753,7 @@ impl App {
                 let floor = c
                     .cells
                     .iter()
-                    .filter(|x| **x == radiocraft_engine::model::Cell::Floor)
+                    .filter(|x| **x == coveragecraft_engine::model::Cell::Floor)
                     .count() as f64
                     * cell_m2;
                 for (label, value) in [
@@ -1010,7 +1010,7 @@ impl App {
                     .walls
                     .materials
                     .get(region.material)
-                    .and_then(|(_, l)| radiocraft_engine::materials::rf_preset_of(l))
+                    .and_then(|(_, l)| coveragecraft_engine::materials::rf_preset_of(l))
                     .map(|p| p.id);
                 let colour = wall_colour(preset, region.thick.is_some());
                 for ring in &region.rings {
@@ -1026,7 +1026,7 @@ impl App {
         // Measured points in the shown band: a dot in the measured signal's colour.
         let band = self.engine.settings().band;
         for pt in self.engine.survey().iter().filter(|pt| pt.band == band) {
-            let [r, g, b] = radiocraft_engine::model::colour(pt.rssi_dbm);
+            let [r, g, b] = coveragecraft_engine::model::colour(pt.rssi_dbm);
             painter.circle(
                 to_screen(&self.view, pt.at),
                 4.0,
@@ -1035,7 +1035,7 @@ impl App {
             );
         }
         // Routers.
-        let pick = |v: &View, pos: Pos2, routers: &[radiocraft_engine::Router]| -> Option<u64> {
+        let pick = |v: &View, pos: Pos2, routers: &[coveragecraft_engine::Router]| -> Option<u64> {
             routers
                 .iter()
                 .map(|r| (r.id, to_screen(v, r.at).distance(pos)))
@@ -1203,6 +1203,11 @@ impl App {
 }
 
 /// The label of a preset, in our own words.
+/// A project file: `.coveragecraft`, or `.rcraft` from when the app was called RadioCraft.
+fn is_project(lower: &str) -> bool {
+    lower.ends_with(".coveragecraft") || lower.ends_with(".rcraft")
+}
+
 fn preset_label(id: &str) -> &'static str {
     match id {
         "concrete" => "Concrete",

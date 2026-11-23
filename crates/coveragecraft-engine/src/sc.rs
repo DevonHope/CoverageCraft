@@ -1,8 +1,8 @@
-//! SolidCraft designs (`.sc`): SolidCraft itself turns a design into a mesh, so RadioCraft never
+//! SolidCraft designs (`.sc`): SolidCraft itself turns a design into a mesh, so CoverageCraft never
 //! reads SolidCraft's kernel format. Its command-line tool (`solidcraft-cli`) runs the design's
 //! history and exports every body as an OBJ object, and lists the views saved in the design.
 //!
-//! - The tool is found at `RADIOCRAFT_SOLIDCRAFT_CLI`, then on `PATH`, then inside
+//! - The tool is found at `COVERAGECRAFT_SOLIDCRAFT_CLI`, then on `PATH`, then inside
 //!   `SolidCraft.app` or `SolidCraft Dev.app` in `/Applications` or `~/Applications` (macOS).
 //! - It runs without a shell, with a time limit, in a temporary folder that is removed after, and
 //!   with SolidCraft's settings, recovery and control folders pointed there, so opening a design
@@ -35,7 +35,11 @@ pub struct Converted {
 
 /// Where `solidcraft-cli` is, if anywhere.
 pub fn find_cli() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("RADIOCRAFT_SOLIDCRAFT_CLI").map(PathBuf::from) {
+    // RADIOCRAFT_SOLIDCRAFT_CLI: the name before the app was renamed.
+    if let Some(p) = std::env::var_os("COVERAGECRAFT_SOLIDCRAFT_CLI")
+        .or_else(|| std::env::var_os("RADIOCRAFT_SOLIDCRAFT_CLI"))
+        .map(PathBuf::from)
+    {
         return p.is_file().then_some(p);
     }
     let name = if cfg!(windows) {
@@ -72,7 +76,7 @@ pub fn find_cli() -> Option<PathBuf> {
 fn scratch() -> Result<PathBuf, String> {
     static N: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "radiocraft-sc-{}-{}",
+        "coveragecraft-sc-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
@@ -91,7 +95,7 @@ pub fn convert(path: &Path) -> Result<Converted, String> {
 pub fn convert_with(path: &Path, cancel: &AtomicBool) -> Result<Converted, String> {
     let cli = find_cli().ok_or(
         "opening a SolidCraft design needs SolidCraft installed (its solidcraft-cli), or \
-         RADIOCRAFT_SOLIDCRAFT_CLI set to it; or export the design from SolidCraft as OBJ",
+         COVERAGECRAFT_SOLIDCRAFT_CLI set to it; or export the design from SolidCraft as OBJ",
     )?;
     let dir = scratch()?;
     let result = run(&cli, path, &dir, cancel);
@@ -216,7 +220,7 @@ fn saved_views(results: &Value) -> (Vec<PlanView>, Vec<String>) {
             .is_some_and(|u| u != "z")
         {
             notes.push(format!(
-                "the saved view \"{name}\" is in a Y-up frame, which RadioCraft doesn't read yet"
+                "the saved view \"{name}\" is in a Y-up frame, which CoverageCraft doesn't read yet"
             ));
             continue;
         }

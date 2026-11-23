@@ -1,4 +1,4 @@
-//! The engine: RadioCraft's state and every action on it as a command. The window and the CLI
+//! The engine: CoverageCraft's state and every action on it as a command. The window and the CLI
 //! both run commands through [`Engine::execute`], so anything a panel can do, a script can do.
 
 use std::sync::Arc;
@@ -162,7 +162,7 @@ pub struct Coverage {
     pub field: Arc<Field>,
 }
 
-/// RadioCraft's state.
+/// CoverageCraft's state.
 pub struct Engine {
     /// The shown floor's plan (the others' are parked in `floors`).
     plan: Option<Arc<FloorPlan>>,
@@ -297,7 +297,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "project.open",
-        "{path} → open a RadioCraft project (.rcraft)",
+        "{path} → open a CoverageCraft project (.coveragecraft; a RadioCraft .rcraft too)",
     ),
     (
         "project.save",
@@ -1159,7 +1159,7 @@ impl Engine {
                 return Err(bad(
                     command,
                     format!(
-                        "{path}: RadioCraft reads DXF plans (CADCraft), OBJ or STL models, and SolidCraft designs (.sc)"
+                        "{path}: CoverageCraft reads DXF plans (CADCraft), OBJ or STL models, and SolidCraft designs (.sc)"
                     ),
                 ));
             }
@@ -2707,7 +2707,7 @@ impl Engine {
         // floor and drop the others.
         let floors = self.all_floors();
         let project = json!({
-            "format": "radiocraft-project/2",
+            "format": "coveragecraft-project/2",
             "floors": floors.iter().map(|f| json!({
                 "name": f.name,
                 "elevation": f.elevation,
@@ -2743,11 +2743,12 @@ impl Engine {
         let format = project.get("format").and_then(Value::as_str);
         if !matches!(
             format,
-            Some("radiocraft-project/1" | "radiocraft-project/2")
+            // RadioCraft was this app's name until 2026-11-23: its projects open as they are.
+            Some("coveragecraft-project/2" | "radiocraft-project/1" | "radiocraft-project/2")
         ) {
             return Err(bad(
                 command,
-                format!("{path}: not a RadioCraft project (or one from a newer RadioCraft)"),
+                format!("{path}: not a CoverageCraft project (or one from a newer CoverageCraft)"),
             ));
         }
         // A design exported already (perhaps in the background) isn't exported again.

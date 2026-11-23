@@ -1,5 +1,5 @@
 //! DWG drawings, read as CADCraft reads them: the `acadrust` crate (MPL-2.0, used unmodified)
-//! turns the DWG into a DXF in memory, and RadioCraft reads that DXF as any other.
+//! turns the DWG into a DXF in memory, and CoverageCraft reads that DXF as any other.
 
 /// The most a DWG may expand to while it is read (bytes).
 const MAX_EXPANDED: usize = 512 << 20;

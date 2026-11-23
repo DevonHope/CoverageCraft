@@ -1,27 +1,27 @@
-# RadioCraft: instructions for agents
+# CoverageCraft: instructions for agents
 
-RadioCraft plans Wi-Fi coverage from CADCraft DXF plans and SolidCraft OBJ/STL models. It is a
+CoverageCraft plans Wi-Fi coverage from CADCraft DXF plans and SolidCraft OBJ/STL models. It is a
 beta that aims to join the Craft suite, so it follows the Craft app standards
 (`standards/app-agents.md` in storytold/craft-contrib). Read that file first; the rules below are
 how this repository applies it.
 
 ## This repository
 
-- `crates/radiocraft-engine`: everything that isn't drawing. Plans (`dxf.rs`, `mesh.rs`,
+- `crates/coveragecraft-engine`: everything that isn't drawing. Plans (`dxf.rs`, `mesh.rs`,
   `plan.rs`), materials (`materials.rs`), the signal model (`model.rs`), channels and link rate
   (`radio.rs`), the maps (`views.rs`), spot suggestions (`placement.rs`), measured points and
   calibration (`survey.rs`), devices (`devices.rs`), the commands (`engine.rs`), PNG export
   (`picture.rs`), the HTML report (`report.rs`), viewpoints (`viewpoint.rs`), floors (`floors.rs`; the
   cross-floor path is `model::Building`), SolidCraft designs
   through `solidcraft-cli` (`sc.rs`) and DWG through acadrust (`dwg.rs`). No egui here.
-- `apps/radiocraft`: the egui window. It only calls `Engine::execute` and reads the engine's
+- `apps/coveragecraft`: the egui window. It only calls `Engine::execute` and reads the engine's
   state; a feature that exists only in the window is a bug. `header.rs` is the Craft header
   (craft-window's title bar, craft-menu's menus, toolbar, status bar, Home): every menu item is a
   command id run by `App::menu_command`; `captions.rs` draws the window buttons and resize edges
   where the app's bar is the title bar (Windows, Linux).
-- `apps/radiocraft-cli`: the same commands without a window, plus scripts.
+- `apps/coveragecraft-cli`: the same commands without a window, plus scripts.
 - Tests: unit tests beside the code (`*_tests.rs` or `mod tests`); integration tests in
-  `crates/radiocraft-engine/tests/it/main.rs`, one binary. Fixtures in `tests/fixtures/`, each
+  `crates/coveragecraft-engine/tests/it/main.rs`, one binary. Fixtures in `tests/fixtures/`, each
   with a row in `ATTRIBUTION.md`.
 
 ## Rules

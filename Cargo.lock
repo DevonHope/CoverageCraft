@@ -694,6 +694,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f8f80099a98041a3d1622845c271458a2d73e688351bf3cb999266764b81d48"
 
 [[package]]
+name = "coveragecraft"
+version = "0.1.0-beta.1"
+dependencies = [
+ "coveragecraft-engine",
+ "craft-menu",
+ "craft-window",
+ "eframe",
+ "egui",
+ "png 0.17.16",
+ "rfd",
+ "serde_json",
+]
+
+[[package]]
+name = "coveragecraft-cli"
+version = "0.1.0-beta.1"
+dependencies = [
+ "coveragecraft-engine",
+ "serde_json",
+]
+
+[[package]]
+name = "coveragecraft-engine"
+version = "0.1.0-beta.1"
+dependencies = [
+ "acadrust",
+ "craft-dxf",
+ "craft-mesh",
+ "png 0.17.16",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-codepage"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=8f6ad14b58ca2efee67aac5d0f5573bad6a5ca81#8f6ad14b58ca2efee67aac5d0f5573bad6a5ca81"
@@ -2679,41 +2714,6 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
-
-[[package]]
-name = "radiocraft"
-version = "0.1.0-beta.1"
-dependencies = [
- "craft-menu",
- "craft-window",
- "eframe",
- "egui",
- "png 0.17.16",
- "radiocraft-engine",
- "rfd",
- "serde_json",
-]
-
-[[package]]
-name = "radiocraft-cli"
-version = "0.1.0-beta.1"
-dependencies = [
- "radiocraft-engine",
- "serde_json",
-]
-
-[[package]]
-name = "radiocraft-engine"
-version = "0.1.0-beta.1"
-dependencies = [
- "acadrust",
- "craft-dxf",
- "craft-mesh",
- "png 0.17.16",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
 
 [[package]]
 name = "rand"

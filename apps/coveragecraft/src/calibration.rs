@@ -2,8 +2,8 @@
 //! (the walls' losses it would change, the error before, after and on points it wasn't fitted
 //! to), and the calibrated wall losses in use, with Reset.
 
+use coveragecraft_engine::materials::Band;
 use egui::RichText;
-use radiocraft_engine::materials::Band;
 use serde_json::{Value, json};
 
 use super::{App, preset_label};

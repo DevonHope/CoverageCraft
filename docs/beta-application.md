@@ -8,7 +8,7 @@ the name check at the end first.
 
 **App name**
 
-RadioCraft
+CoverageCraft
 
 **Email**
 
@@ -16,11 +16,11 @@ RadioCraft
 
 **Repo**
 
-https://github.com/DevonHope/RadioCraft
+https://github.com/DevonHope/CoverageCraft
 
 **Description** (the form's free text; about 150 words)
 
-> RadioCraft plans Wi-Fi coverage from the drawings and models people already make in the Craft
+> CoverageCraft plans Wi-Fi coverage from the drawings and models people already make in the Craft
 > apps. Open a CADCraft DXF or DWG plan or a SolidCraft design (cut at a height, from any side or
 > a saved view), give each layer or object a material, place routers and access points, and see
 > the predicted signal on 2.4, 5 and 6 GHz, stacked over several floors. Maps show the signal,
@@ -33,17 +33,18 @@ https://github.com/DevonHope/RadioCraft
 
 **Website**
 
-*(leave empty, or https://github.com/DevonHope/RadioCraft#readme)*
+*(leave empty, or https://github.com/DevonHope/CoverageCraft#readme)*
 
 ---
 
 ## Notes before sending
 
-- **Name check (blocks sending).** The trademark register search (2026-11-23, recorded in
-  `docs/feature-names.md`) found RADIOCRAFT registered in Canada for radio equipment and
-  RADIOCRAFTS registered in the EU, the US and elsewhere for radio modules, both class 9, so
-  "RadioCraft" fails the Craft naming standard (`standards/naming.md`, "unclear means no").
-  CoverageCraft and AirwaveCraft came back clear. Rename before sending.
+- **The name.** The app was called RadioCraft until 2026-11-23. The trademark register search
+  (recorded in `docs/feature-names.md`) found RADIOCRAFT registered in Canada for radio equipment
+  and RADIOCRAFTS registered in the EU, the US and elsewhere for radio modules, both class 9, so
+  that name failed the Craft naming standard (`standards/naming.md`, "unclear means no"). It is
+  now CoverageCraft, which came back clear in the registers, on GitHub and on crates.io. Mention
+  the old name if the beta team has seen it.
 - **"Wi-Fi"** is a Wi-Fi Alliance trademark. The description uses it only to say what the app
   plans, as the naming standard allows for a technology the app works with. Feature labels say
   "signal", "coverage" and "router" instead.
@@ -59,6 +60,6 @@ https://github.com/DevonHope/RadioCraft
 - **Open questions to ask the beta team:**
   - whether a beta app should copy `standards/app-agents.md` into its `AGENTS.md` now or on
     acceptance;
-  - the app id (`ai.storyteller.radiocraft`, as accepted apps use, or your own until then);
+  - the app id (`ai.storyteller.coveragecraft`, as accepted apps use, or your own until then);
   - whether a network-scanning phase (live site surveys) is welcome, since it needs OS network
     access the other Craft apps don't use.

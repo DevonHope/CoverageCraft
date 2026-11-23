@@ -1,4 +1,4 @@
-//! The coverage model: the multi-wall indoor model RadioCraft predicts the signal with. First written by the same author for SolidCraft (tangency-labs/solidcraft#20164, MIT OR Apache-2.0).
+//! The coverage model: the multi-wall indoor model CoverageCraft predicts the signal with. First written by the same author for SolidCraft (tangency-labs/solidcraft#20164, MIT OR Apache-2.0).
 //!
 //! The received signal at a point is
 //!

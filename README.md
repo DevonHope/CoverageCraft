@@ -1,13 +1,13 @@
-# RadioCraft (beta)
+# CoverageCraft (beta)
 
-<img src="assets/icon.svg" alt="RadioCraft's logo: a router sending out rings of signal in the heatmap's colours, which turn weaker where they have passed the corner of a wall" width="128">
+<img src="assets/icon.svg" alt="CoverageCraft's logo: a router sending out rings of signal in the heatmap's colours, which turn weaker where they have passed the corner of a wall" width="128">
 
-RadioCraft plans Wi-Fi coverage from the floor plans and models you already have. Open a DXF or
+CoverageCraft plans Wi-Fi coverage from the floor plans and models you already have. Open a DXF or
 DWG plan from CADCraft, a SolidCraft design, or an OBJ or STL model. Tell it what each layer or
 object is made of, place routers and access points, and see the predicted signal across the floor,
 or across several floors.
 
-![RadioCraft with CADCraft's example apartment: two routers on overlapping 5 GHz channels (36 at 80 MHz and 44), and the map of where a device hears the other one on its channel](docs/screenshot.png)
+![CoverageCraft with CADCraft's example apartment: two routers on overlapping 5 GHz channels (36 at 80 MHz and 44), and the map of where a device hears the other one on its channel](docs/screenshot.png)
 
 It is a beta. The numbers are a planning estimate from a simple indoor model, not a site survey;
 see [What the numbers mean](#what-the-numbers-mean).
@@ -17,7 +17,7 @@ see [What the numbers mean](#what-the-numbers-mean).
 - **Plans from other Craft apps.** A CADCraft drawing (DXF, or DWG through the `acadrust` crate
   as CADCraft reads it) is read by its layers (`A-WALL`, `A-GLAZ`, `A-DOOR`, `A-FURN` and the
   like); its named views can frame the map. A SolidCraft design (`.sc`) opens through SolidCraft's
-  own `solidcraft-cli`, so SolidCraft must be installed (or point `RADIOCRAFT_SOLIDCRAFT_CLI` at
+  own `solidcraft-cli`, so SolidCraft must be installed (or point `COVERAGECRAFT_SOLIDCRAFT_CLI` at
   its CLI). It and OBJ and STL models are cut at a height (1 m by default) and read by their
   objects, one per body. Blocks, arcs, bulged polylines and hatches are read; walls drawn as
   closed outlines keep their rooms open.
@@ -28,7 +28,7 @@ see [What the numbers mean](#what-the-numbers-mean).
   and Home page as the other Craft apps, through craft-libs' `craft-window` and `craft-menu`. On
   Windows and Linux the app's bar is the title bar, with the desktop's window buttons in its
   order and look (Windows, GNOME's Adwaita, KDE's Breeze) and resizable edges; tiling desktops,
-  and `RADIOCRAFT_TITLEBAR=system`, keep the system's title bar. `RADIOCRAFT_CAPTIONS=windows`
+  and `COVERAGECRAFT_TITLEBAR=system`, keep the system's title bar. `COVERAGECRAFT_CAPTIONS=windows`
   (or `adwaita`, `breeze`, `generic`) shows a desktop's buttons on any platform, for checking.
 - **Materials.** Each layer or object is concrete, drywall, low-E glass, interior glass, metal,
   a wood door, "not a wall", or "guess from thickness" (drywall below 140 mm, concrete from there).
@@ -57,7 +57,7 @@ see [What the numbers mean](#what-the-numbers-mean).
   loss before and after, and the error before, after and on points left out of the fit.
 - **Reports.** One HTML page with every band's figures and maps, the routers, the walls and the
   settings; print it to PDF from a browser.
-- **Projects.** Save the materials, routers, channels, measurements and settings as a `.rcraft`
+- **Projects.** Save the materials, routers, channels, measurements and settings as a `.coveragecraft`
   file beside the plan. Export the shown map as a PNG.
 - **Several floors.** Stack floors: each has its own plan (a DXF, or the same model cut higher),
   an elevation, an offset to line plans up, and the slab under it (concrete unless you choose;
@@ -77,11 +77,11 @@ see [What the numbers mean](#what-the-numbers-mean).
 Rust 1.90 or later.
 
 ```bash
-cargo run --release -p radiocraft
+cargo run --release -p coveragecraft
 ```
 
 ```bash
-cargo run --release -p radiocraft -- tests/fixtures/cadcraft-apartment.dxf
+cargo run --release -p coveragecraft -- tests/fixtures/cadcraft-apartment.dxf
 ```
 
 ### Install on macOS
@@ -90,9 +90,9 @@ cargo run --release -p radiocraft -- tests/fixtures/cadcraft-apartment.dxf
 scripts/install-macos.sh
 ```
 
-It builds a release and installs `RadioCraft.app` in `~/Applications` (set `RADIOCRAFT_APP_DIR`
+It builds a release and installs `CoverageCraft.app` in `~/Applications` (set `COVERAGECRAFT_APP_DIR`
 for elsewhere); the command-line tool is inside it at
-`RadioCraft.app/Contents/MacOS/radiocraft-cli`. To keep the installed app up to date while
+`CoverageCraft.app/Contents/MacOS/coveragecraft-cli`. To keep the installed app up to date while
 developing, add local git hooks that reinstall it in the background after every commit, merge,
 pull or branch checkout:
 
@@ -100,17 +100,17 @@ pull or branch checkout:
 scripts/install-macos.sh --hooks
 ```
 
-Progress goes to `~/Library/Logs/RadioCraft/install.log`, and a notification says when a build
+Progress goes to `~/Library/Logs/CoverageCraft/install.log`, and a notification says when a build
 is installed. Quit and reopen the app to run the new build.
 
 The command-line tool runs the same engine without a window:
 
 ```bash
-cargo run --release -p radiocraft-cli -- plan tests/fixtures/cadcraft-apartment.dxf --router 1200,1200,900 --device generic-router --material A-WALL=concrete --png coverage.png
+cargo run --release -p coveragecraft-cli -- plan tests/fixtures/cadcraft-apartment.dxf --router 1200,1200,900 --device generic-router --material A-WALL=concrete --png coverage.png
 ```
 
 ```bash
-cargo run --release -p radiocraft-cli -- script docs/examples/cadcraft-apartment.json
+cargo run --release -p coveragecraft-cli -- script docs/examples/cadcraft-apartment.json
 ```
 
 Measured points are a CSV with a header row:
@@ -132,16 +132,16 @@ materials' presets don't change, and Reset (or `settings.set {"loss_db": {}}`) p
 The fit is linear least squares, counted again once with the fitted losses (where two walls
 overlap, a new loss can change which counts). The error on points left out (each fifth of the
 points predicted by a fit to the rest) says how it will do at places not measured; when it is
-worse than the model as it was, RadioCraft says so.
+worse than the model as it was, CoverageCraft says so.
 
-`radiocraft-cli commands` lists every command and its parameters. A script is
+`coveragecraft-cli commands` lists every command and its parameters. A script is
 `{"commands": [{"command": "...", "params": {...}}, ...]}`, run in order; the window takes the
 same file with `--script` (and `--screenshot out.png` to save a picture of the window and quit).
 
 ### From SolidCraft
 
 Export the design as OBJ (File → Export, OBJ). SolidCraft writes one object per body, in
-millimetres with Z up, which is what RadioCraft expects. Open the `.obj`; set the slice height in
+millimetres with Z up, which is what CoverageCraft expects. Open the `.obj`; set the slice height in
 the top bar if 1 m doesn't cut through the walls. An STL has no object names, so it arrives as one
 object; give it a material by hand.
 
@@ -187,7 +187,7 @@ Known limits:
   in the background (the status bar shows it, with Cancel); the CLI and scripts wait for it. An
   installed SolidCraft older than
   the build that saved the design may read it with warnings (they show in the plan's notes);
-  `RADIOCRAFT_SOLIDCRAFT_CLI` can point at another build's `solidcraft-cli`.
+  `COVERAGECRAFT_SOLIDCRAFT_CLI` can point at another build's `solidcraft-cli`.
 - Saved SolidCraft views are read when they are Z-up; a DXF's named views are used when they
   look straight down in model space (twist ignored; paper-space views and layouts aren't offered).
 
@@ -198,6 +198,14 @@ projects, PNG export, the CLI and scripts. Not yet: channel suggestions, antenna
 openings in slabs, live scanning of networks, translations beyond English (strings go through
 `i18n::tr` already).
 See [docs/plan.md](docs/plan.md).
+
+## Formerly RadioCraft
+
+The app was called RadioCraft until 2026-11-23; the name clashed with registered trademarks for
+radio equipment (see `docs/feature-names.md`). Projects saved by RadioCraft (`.rcraft`,
+`radiocraft-project/1` and `/2`) open as they are, and the old `RADIOCRAFT_SOLIDCRAFT_CLI`,
+`RADIOCRAFT_CAPTIONS`, `RADIOCRAFT_APP_DIR` and `RADIOCRAFT_JOBS` variables are still read. New
+projects are saved as `.coveragecraft`.
 
 ## Licence
 

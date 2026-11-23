@@ -109,7 +109,7 @@ figure{margin:12px 0 24px;break-inside:avoid}figure img{max-width:100%;border:1p
 </style></head><body>";
     s += &format!("<h1>{}</h1>", escape(&r.title));
     s += &format!(
-        "<p class=\"dim\">Plan: {} · made with RadioCraft</p>",
+        "<p class=\"dim\">Plan: {} · made with CoverageCraft</p>",
         escape(&r.plan)
     );
     if let Some(n) = &r.notes {

@@ -1,12 +1,12 @@
 [package]
-name = "radiocraft"
-description = "RadioCraft: plan Wi-Fi coverage on floor plans from CADCraft and models from SolidCraft"
+name = "coveragecraft"
+description = "CoverageCraft: plan Wi-Fi coverage on floor plans from CADCraft and models from SolidCraft"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-radiocraft-engine = { workspace = true }
+coveragecraft-engine = { workspace = true }
 serde_json = { workspace = true }
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "accesskit", "wayland", "x11"] }
 egui = "0.37"

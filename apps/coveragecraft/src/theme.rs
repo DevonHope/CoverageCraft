@@ -45,7 +45,7 @@ pub const TOKENS: Tokens = Tokens {
 
 /// A wall outline's colour by its material (the same roles the PNG uses).
 pub fn wall_colour(preset: Option<&str>, guessed: bool) -> Color32 {
-    let [r, g, b, _] = radiocraft_engine::picture::outline_colour(preset, guessed);
+    let [r, g, b, _] = coveragecraft_engine::picture::outline_colour(preset, guessed);
     // The PNG's near-black concrete is lifted so it reads on the dark canvas.
     if guessed || preset.is_none() || preset == Some("concrete") {
         return Color32::from_rgb(200, 205, 212);

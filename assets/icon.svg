@@ -6,7 +6,7 @@
       <stop offset="1" stop-color="#0e1421"/>
     </linearGradient>
   </defs>
-  <title>RadioCraft icon</title>
+  <title>CoverageCraft icon</title>
   <g id="Layer_1" data-name="Layer 1">
     <path d="M284 100 L740 100 C841.62 100 924 182.38 924 284 L924 740 C924 841.62 841.62 924 740 924 L284 924 C182.38 924 100 841.62 100 740 L100 284 C100 182.38 182.38 100 284 100 Z" fill="url(#linear-gradient-1)"/>
     <circle cx="460" cy="540" r="300" fill="none" stroke="#f2b33d" stroke-width="52" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"/>

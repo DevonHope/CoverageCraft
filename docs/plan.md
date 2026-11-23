@@ -1,6 +1,6 @@
-# RadioCraft: plan
+# CoverageCraft: plan
 
-RadioCraft plans Wi-Fi coverage from floor plans and models made in other Craft apps. It reads a
+CoverageCraft plans Wi-Fi coverage from floor plans and models made in other Craft apps. It reads a
 plan, gives its walls materials, places routers and predicts the signal across the floor. This
 page is the plan for the beta and what comes after it.
 
@@ -12,13 +12,13 @@ page is the plan for the beta and what comes after it.
 
 ## Where it fits in the Craft suite
 
-| App | What RadioCraft takes from it |
+| App | What CoverageCraft takes from it |
 |---|---|
 | CADCraft | DXF floor plans: walls, glazing and doors by layer (`A-WALL`, `A-GLAZ`, `A-DOOR`...), hatches as wall areas, block inserts |
-| SolidCraft (Tangency Labs) | 3D models exported as OBJ (one object per body, with its material name) or STL; RadioCraft cuts them at a height |
+| SolidCraft (Tangency Labs) | 3D models exported as OBJ (one object per body, with its material name) or STL; CoverageCraft cuts them at a height |
 | craft-libs | `craft-dxf` and `craft-mesh` read those files; nothing is parsed twice |
 
-RadioCraft never edits those apps' files. It keeps its own project file (`.rcraft`, JSON) that
+CoverageCraft never edits those apps' files. It keeps its own project file (`.coveragecraft`, JSON) that
 names the plan it was made from, the layer and object materials, the routers and the settings.
 
 ## How it predicts the signal
@@ -45,7 +45,7 @@ Outputs: a heatmap, the share of the floor at −60 dBm or better and at −67 d
 - Routers: add, drag, remove; height and EIRP per band, or a device from a device file (a JSON
   list such as one built from FCC and ISED records).
 - Heatmap, colour key, coverage figures; PNG export.
-- Every action is a command; `radiocraft-cli` runs the same commands with no window.
+- Every action is a command; `coveragecraft-cli` runs the same commands with no window.
 - Added from the features common in site-survey tools, in our own design: channels per router;
   maps of the second-strongest signal, the serving router, same-channel routers heard, the
   estimated link rate and leakage outside the walls; a probe listing the strongest routers;
@@ -60,7 +60,7 @@ Outputs: a heatmap, the share of the floor at −60 dBm or better and at −67 d
 2. **Antenna patterns.** A device file can carry a pattern; ceiling and wall mounts differ.
 3. **Openings in slabs.** Stairwells and shafts as regions of a floor with no slab.
 4. **Site survey** (needs a decision from the Craft maintainers): measure networks around you
-   on the computer running RadioCraft, click by click or while walking. It needs OS network
+   on the computer running CoverageCraft, click by click or while walking. It needs OS network
    access, which the other Craft apps don't use.
 
 ## Craft conventions it follows

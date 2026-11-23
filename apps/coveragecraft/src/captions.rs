@@ -203,10 +203,11 @@ pub fn resize_zones(ui: &mut Ui) {
     }
 }
 
-/// For checking the look on another desktop: `RADIOCRAFT_CAPTIONS=windows|adwaita|breeze|generic`
+/// For checking the look on another desktop: `COVERAGECRAFT_CAPTIONS=windows|adwaita|breeze|generic`
 /// draws that family (on any platform, the window's frame off).
 pub fn forced_family() -> Option<CaptionFamily> {
-    std::env::var("RADIOCRAFT_CAPTIONS")
+    std::env::var("COVERAGECRAFT_CAPTIONS")
+        .or_else(|_| std::env::var("RADIOCRAFT_CAPTIONS"))
         .ok()
         .and_then(|v| CaptionFamily::parse(&v))
 }

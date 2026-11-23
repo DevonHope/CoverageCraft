@@ -9,10 +9,10 @@
 //! Every menu item is a command id; [`App::menu_command`] runs it, through the engine's commands or
 //! the same dialogs the panels use.
 
+use coveragecraft_engine::materials::Band;
+use coveragecraft_engine::radio::View as Map;
 use craft_menu::{Chord, CommandRef, ItemKind, LayoutOptions, MenuBar, MenuBarUi, Row, Target};
 use egui::{Align, Layout, RichText, TextureOptions};
-use radiocraft_engine::materials::Band;
-use radiocraft_engine::radio::View as Map;
 use serde_json::{Value, json};
 
 use super::App;
@@ -23,7 +23,7 @@ use crate::theme::TOKENS;
 pub(super) const BAR_HEIGHT: f32 = 30.0;
 
 /// The app's name in menus and the About window.
-pub const APP_NAME: &str = "RadioCraft";
+pub const APP_NAME: &str = "CoverageCraft";
 
 fn row(
     path: &[&str],
@@ -239,7 +239,7 @@ impl App {
             row(
                 &["Help"],
                 CommandRef::new("help.about"),
-                "About RadioCraft",
+                "About CoverageCraft",
                 None,
                 true,
                 plain,
@@ -469,7 +469,7 @@ impl App {
                 ui.add_space(right);
                 if ui
                     .button("?")
-                    .on_hover_text(tr("About RadioCraft"))
+                    .on_hover_text(tr("About CoverageCraft"))
                     .clicked()
                 {
                     self.about = true;
@@ -690,17 +690,17 @@ impl App {
             for line in [
                 tr("CADCraft drawings (DXF and DWG), with their named views"),
                 tr("SolidCraft designs (.sc), seen from any side or a saved view"),
-                tr("OBJ and STL models, and RadioCraft projects (.rcraft)"),
+                tr("OBJ and STL models, and CoverageCraft projects (.coveragecraft)"),
             ] {
                 ui.label(RichText::new(line).color(TOKENS.text_dim).small());
             }
         });
     }
 
-    /// About RadioCraft.
+    /// About CoverageCraft.
     pub(super) fn about_window(&mut self, ctx: &egui::Context) {
         let mut open = self.about;
-        egui::Window::new(tr("About RadioCraft"))
+        egui::Window::new(tr("About CoverageCraft"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -763,7 +763,7 @@ impl App {
 
     /// The shown floor: name, elevation, offset, slab; remove. Shown once there are two.
     pub(super) fn floor_section(&mut self, ui: &mut egui::Ui) {
-        use radiocraft_engine::materials::{Material, RF_PRESETS};
+        use coveragecraft_engine::materials::{Material, RF_PRESETS};
         let floors = self.engine.floors().to_vec();
         if floors.len() < 2 {
             return;

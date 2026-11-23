@@ -1,4 +1,4 @@
-//! RadioCraft's engine: floor plans read from DXF drawings and cut from 3D models, the materials
+//! CoverageCraft's engine: floor plans read from DXF drawings and cut from 3D models, the materials
 //! of their walls, routers, and the coverage model that predicts the signal across the floor.
 //! Everything a user does is a command ([`Engine::execute`]); the window and the CLI share them.
 

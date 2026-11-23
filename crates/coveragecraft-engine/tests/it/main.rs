@@ -1,7 +1,7 @@
-//! RadioCraft's engine on real files: CADCraft's apartment plan, and a model as SolidCraft exports it.
+//! CoverageCraft's engine on real files: CADCraft's apartment plan, and a model as SolidCraft exports it.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)] // Tests fail by panicking.
 
-use radiocraft_engine::Engine;
+use coveragecraft_engine::Engine;
 use serde_json::{Value, json};
 
 fn fixture(name: &str) -> String {
@@ -147,7 +147,7 @@ fn solidcraft_obj() -> String {
 
 #[test]
 fn a_solidcraft_model_is_cut_at_the_slice_height() {
-    let dir = std::env::temp_dir().join(format!("radiocraft-it-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-it-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("room.obj");
     std::fs::write(&path, solidcraft_obj()).unwrap();
@@ -185,7 +185,7 @@ fn a_solidcraft_model_is_cut_at_the_slice_height() {
 
 #[test]
 fn projects_save_and_open_again() {
-    let dir = std::env::temp_dir().join(format!("radiocraft-project-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-project-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut e = Engine::new();
     run(
@@ -209,7 +209,7 @@ fn projects_save_and_open_again() {
         json!({"band": "2.4", "grid_step": 150}),
     );
     let before = run(&mut e, "coverage.compute", json!({}));
-    let project = dir.join("home.rcraft");
+    let project = dir.join("home.coveragecraft");
     run(
         &mut e,
         "project.save",
@@ -296,7 +296,7 @@ fn channels_maps_and_leakage() {
 /// and leaves the shown band and map as they were.
 #[test]
 fn the_report_is_one_html_page() {
-    let dir = std::env::temp_dir().join(format!("radiocraft-report-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-report-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut e = Engine::new();
     run(
@@ -338,7 +338,7 @@ fn the_report_is_one_html_page() {
     );
     assert_eq!(html.matches("data:image/png;base64,").count(), 12);
     assert_eq!(e.settings().band.name(), "2.4");
-    assert_eq!(e.settings().view, radiocraft_engine::radio::View::Rate);
+    assert_eq!(e.settings().view, coveragecraft_engine::radio::View::Rate);
     assert!(
         e.execute(
             "report.export",
@@ -410,7 +410,7 @@ fn suggested_spots_beat_a_corner() {
 /// default model's error, and calibrating finds the exponent and offsets again.
 #[test]
 fn calibration_finds_a_known_model() {
-    let dir = std::env::temp_dir().join(format!("radiocraft-survey-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-survey-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let setup = |e: &mut Engine| {
         run(
@@ -481,7 +481,7 @@ fn calibration_finds_a_known_model() {
     run(&mut e, "survey.calibrate", json!({"apply": true}));
     assert!((e.settings().exponent - 3.0).abs() < 0.05);
     // The survey and the calibration are saved with the project.
-    let project = dir.join("p.rcraft");
+    let project = dir.join("p.coveragecraft");
     run(
         &mut e,
         "project.save",
@@ -515,7 +515,7 @@ fn calibration_finds_a_known_model() {
 /// building when the viewpoint changes.
 #[test]
 fn a_model_can_be_seen_from_the_front() {
-    let dir = std::env::temp_dir().join(format!("radiocraft-front-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-front-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("room.obj");
     std::fs::write(&path, solidcraft_obj()).unwrap();
@@ -559,7 +559,7 @@ fn a_model_can_be_seen_from_the_front() {
     assert_eq!(routers[0]["at"], json!([1000.0, 1200.0]), "{routers}");
     assert_eq!(routers[0]["height"], -1500.0);
     // A project keeps the viewpoint: it opens seen from the front again, the router in place.
-    let project = dir.join("front.rcraft");
+    let project = dir.join("front.coveragecraft");
     run(
         &mut e,
         "project.save",
@@ -609,7 +609,7 @@ fn a_named_view_frames_the_map() {
 0\nLWPOLYLINE\n8\nA-WALL\n90\n4\n70\n1\n10\n0\n20\n0\n10\n8000\n20\n0\n10\n8000\n20\n4000\n10\n0\n20\n4000\n\
 0\nLWPOLYLINE\n8\nA-WALL\n90\n4\n70\n1\n10\n150\n20\n150\n10\n7850\n20\n150\n10\n7850\n20\n3850\n10\n150\n20\n3850\n\
 0\nENDSEC\n0\nEOF\n";
-    let dir = std::env::temp_dir().join(format!("radiocraft-view-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-view-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("plan.dxf");
     std::fs::write(&path, dxf).unwrap();
@@ -654,7 +654,7 @@ fn a_named_view_frames_the_map() {
 /// SolidCraft installed the test says so and passes.
 #[test]
 fn a_solidcraft_design_opens() {
-    if radiocraft_engine::sc::find_cli().is_none() {
+    if coveragecraft_engine::sc::find_cli().is_none() {
         eprintln!("SolidCraft isn't installed here (no solidcraft-cli): skipped");
         return;
     }
@@ -675,7 +675,7 @@ fn a_solidcraft_design_opens() {
     assert_eq!(c["floor"], "enclosed", "{c}");
     // A view saved in the design (by SolidCraft itself, in a temporary copy) is offered, and
     // picking it cuts the design along it: this one looks from the street side, like Front.
-    let dir = std::env::temp_dir().join(format!("radiocraft-scview-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-scview-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let script = dir.join("save-view.json");
     std::fs::write(
@@ -686,7 +686,7 @@ fn a_solidcraft_design_opens() {
     )
     .unwrap();
     let copy = dir.join("with-view.sc");
-    let status = std::process::Command::new(radiocraft_engine::sc::find_cli().unwrap())
+    let status = std::process::Command::new(coveragecraft_engine::sc::find_cli().unwrap())
         .arg("run")
         .arg(&script)
         .arg("--in")
@@ -734,7 +734,7 @@ fn a_solidcraft_design_opens() {
 /// A DWG opens as the same plan as its DXF: the example apartment, written as DWG by acadrust.
 #[test]
 fn a_dwg_plan_opens() {
-    let dir = std::env::temp_dir().join(format!("radiocraft-dwg-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-dwg-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let doc = acadrust::DxfReader::from_file(fixture("cadcraft-apartment.dxf"))
         .unwrap()
@@ -891,7 +891,7 @@ fn undo_and_redo() {
 /// Undoing a change of viewpoint cuts the model the old way again, routers back in place.
 #[test]
 fn undoing_a_viewpoint_cuts_the_model_again() {
-    let dir = std::env::temp_dir().join(format!("radiocraft-undo-view-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-undo-view-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("room.obj");
     std::fs::write(&path, solidcraft_obj()).unwrap();
@@ -930,7 +930,7 @@ fn undoing_a_viewpoint_cuts_the_model_again() {
 /// through a project; a cancelled export stops at once.
 #[test]
 fn a_design_exported_in_the_background_opens_from_it() {
-    use radiocraft_engine::sc;
+    use coveragecraft_engine::sc;
     if sc::find_cli().is_none() {
         eprintln!("SolidCraft isn't installed here (no solidcraft-cli): skipped");
         return;
@@ -963,9 +963,9 @@ fn a_design_exported_in_the_background_opens_from_it() {
             .any(|n| n == "exported in the background"),
         "{info}"
     );
-    let dir = std::env::temp_dir().join(format!("radiocraft-bg-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-bg-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let project = dir.join("p.rcraft");
+    let project = dir.join("p.coveragecraft");
     run(
         &mut e,
         "project.save",
@@ -1015,7 +1015,7 @@ fn room_dxf(x0: f64) -> String {
 /// another floor isn't an edit; and bad floor commands are refused.
 #[test]
 fn floors_stack() {
-    let dir = std::env::temp_dir().join(format!("radiocraft-floors-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-floors-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (ground, upper) = (dir.join("ground.dxf"), dir.join("upper.dxf"));
     std::fs::write(&ground, room_dxf(0.0)).unwrap();
@@ -1099,14 +1099,14 @@ fn floors_stack() {
         -57.8
     );
     // A project keeps the floors, their offsets, the router's floor and the floor shown.
-    let project = dir.join("house.rcraft");
+    let project = dir.join("house.coveragecraft");
     run(
         &mut e,
         "project.save",
         json!({"path": project.to_string_lossy()}),
     );
     let text = std::fs::read_to_string(&project).unwrap();
-    assert!(text.contains("radiocraft-project/2"));
+    assert!(text.contains("coveragecraft-project/2"));
     let mut again = Engine::new();
     run(
         &mut again,
@@ -1164,7 +1164,8 @@ fn floors_stack() {
 /// A model seen from a side shows the shown floor alone, and says so.
 #[test]
 fn floors_stack_only_from_the_top() {
-    let dir = std::env::temp_dir().join(format!("radiocraft-floors-side-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("coveragecraft-floors-side-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("room.obj");
     std::fs::write(&path, solidcraft_obj()).unwrap();
@@ -1211,10 +1212,11 @@ fn floors_stack_only_from_the_top() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A project saved before channels and maps existed opens, with them unset.
+/// A project saved before channels and maps existed opens, with them unset; it was saved when
+/// the app was called RadioCraft (format 1, `.rcraft`).
 #[test]
 fn an_older_project_opens() {
-    let dir = std::env::temp_dir().join(format!("radiocraft-old-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-old-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("old.rcraft");
     let old = json!({
@@ -1234,8 +1236,23 @@ fn an_older_project_opens() {
     );
     let routers = run(&mut e, "router.list", json!({}));
     assert_eq!(routers[0]["channels"], json!({}));
-    assert_eq!(e.settings().view, radiocraft_engine::radio::View::Signal);
+    assert_eq!(e.settings().view, coveragecraft_engine::radio::View::Signal);
     assert!(run(&mut e, "coverage.compute", json!({}))["pct_at_least_67"].is_number());
+    // Format 2 under the old name opens too; a format nobody wrote is refused.
+    let mut v2 = old.clone();
+    v2["format"] = json!("radiocraft-project/2");
+    std::fs::write(&path, v2.to_string()).unwrap();
+    run(
+        &mut e,
+        "project.open",
+        json!({"path": path.to_string_lossy()}),
+    );
+    v2["format"] = json!("coveragecraft-project/1");
+    std::fs::write(&path, v2.to_string()).unwrap();
+    assert!(
+        e.execute("project.open", &json!({"path": path.to_string_lossy()}))
+            .is_err()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1293,7 +1310,7 @@ fn hostile_commands_are_refused() {
         assert!(e.execute(command, &params).is_err(), "{command} {params}");
     }
     // Garbage as a DXF is an error, not a crash.
-    let dir = std::env::temp_dir().join(format!("radiocraft-hostile-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-hostile-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // None of these may crash; the DWG ones must also be refused.
     for (name, bytes) in [
@@ -1321,7 +1338,7 @@ fn hostile_commands_are_refused() {
 /// them back, a project keeps them, and bad values are refused.
 #[test]
 fn calibrated_wall_losses_apply_on_every_floor() {
-    let dir = std::env::temp_dir().join(format!("radiocraft-losses-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-losses-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (ground, upper) = (dir.join("ground.dxf"), dir.join("upper.dxf"));
     std::fs::write(&ground, room_dxf(0.0)).unwrap();
@@ -1369,7 +1386,7 @@ fn calibrated_wall_losses_apply_on_every_floor() {
     run(&mut e, "edit.undo", json!({}));
     assert_eq!(probe(&mut e), at30);
     // Kept in the project.
-    let project = dir.join("p.rcraft");
+    let project = dir.join("p.coveragecraft");
     run(
         &mut e,
         "project.save",
@@ -1416,7 +1433,7 @@ fn calibrated_wall_losses_apply_on_every_floor() {
 /// fitted one; applying is one undoable step.
 #[test]
 fn calibration_finds_wall_losses() {
-    let dir = std::env::temp_dir().join(format!("radiocraft-walls-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("coveragecraft-walls-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let setup = |e: &mut Engine| {
         run(
