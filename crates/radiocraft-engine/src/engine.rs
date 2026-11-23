@@ -227,6 +227,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "{path, slice_height?, up?: z|y, viewpoint?} → read a DXF plan (CADCraft), cut an OBJ/STL model or a SolidCraft design (.sc, through SolidCraft's solidcraft-cli) along the viewpoint",
     ),
     (
+        "project.new",
+        "{} → start again: no plan, routers or measurements (loaded devices stay)",
+    ),
+    (
         "project.open",
         "{path} → open a RadioCraft project (.rcraft)",
     ),
@@ -489,6 +493,14 @@ impl Engine {
             "export.png" => self.export_png(command, p),
             "project.save" => self.project_save(command, p),
             "project.open" => self.project_open(command, p),
+            "project.new" => {
+                let devices = (self.devices.clone(), self.devices_file.clone());
+                let revision = self.revision;
+                *self = Engine::default();
+                (self.devices, self.devices_file) = devices;
+                self.revision = revision.wrapping_add(1);
+                Ok(json!({}))
+            }
             "report.export" => self.report_export(command, p),
             "survey.import" => self.survey_import(command, p),
             "survey.add" => {

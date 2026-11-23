@@ -13,6 +13,9 @@ use serde_json::{Value, json};
 use crate::i18n::tr;
 use crate::theme::{TOKENS, wall_colour};
 
+#[path = "header.rs"]
+mod header;
+
 /// How far an arrow key moves the selected router (mm).
 const KEY_STEP_MM: f64 = 100.0;
 
@@ -47,13 +50,32 @@ pub struct App {
     figures_cache: Option<(u64, Value, Option<Value>)>,
     /// The picture, once the window has sent it.
     shot: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<egui::ColorImage>>>>,
+    /// Home (the start page) is showing.
+    home: bool,
+    /// The About window is open.
+    about: bool,
+    logo: Option<TextureHandle>,
+    /// The menus in the macOS menu bar; `None` draws them in the window.
+    pub native: Option<craft_menu::NativeMenu>,
+    /// Room kept at the bar's leading edge for the macOS window buttons (pt).
+    leading: f32,
+    /// Whether the window is movable from the bar now (macOS).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    movable: Option<bool>,
+    /// The plan point under the pointer.
+    pointer: Option<[f64; 2]>,
 }
 
 /// The width of a name in the layers and objects list.
 const NAME_WIDTH: f32 = 150.0;
 
 impl App {
-    pub fn new(path: Option<String>, script: Option<String>, screenshot: Option<String>) -> App {
+    pub fn new(
+        path: Option<String>,
+        script: Option<String>,
+        screenshot: Option<String>,
+        leading: f32,
+    ) -> App {
         let mut app = App {
             engine: Engine::new(),
             view: View {
@@ -71,6 +93,13 @@ impl App {
             screenshot: screenshot.map(|p| (p, 0)),
             figures_cache: None,
             shot: Default::default(),
+            home: true,
+            about: false,
+            logo: None,
+            native: None,
+            leading,
+            movable: None,
+            pointer: None,
         };
         if let Some(path) = path {
             app.open(&path);
@@ -117,6 +146,7 @@ impl App {
                 }
                 self.slice = self.engine.settings().slice_height;
                 self.selected = self.engine.routers().first().map(|r| r.id);
+                self.home = self.engine.plan().is_none();
             }
             Err(e) => self.status = Some((format!("{path}: {e}"), true)),
         }
@@ -183,122 +213,155 @@ impl App {
             self.view.moved = false;
             self.selected = None;
             self.slice = self.engine.settings().slice_height;
+            self.home = false;
         }
     }
 
-    fn menu_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .button(tr("Open plan…"))
-                .on_hover_text(tr(
-                    "A DXF plan, an OBJ or STL model, or a RadioCraft project",
-                ))
-                .clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter(tr("Plans and projects"), &["dxf", "obj", "stl", "rcraft"])
-                    .pick_file()
-            {
-                self.open(&path.to_string_lossy());
-            }
-            if ui.button(tr("Save project…")).clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter(tr("RadioCraft project"), &["rcraft"])
-                    .set_file_name("plan.rcraft")
-                    .save_file()
-                && self
-                    .run("project.save", json!({"path": path.to_string_lossy()}))
-                    .is_some()
-            {
-                self.status = Some((format!("{} {}", tr("Saved"), path.to_string_lossy()), false));
-            }
-            if ui.button(tr("Export picture…")).clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("PNG", &["png"])
-                    .set_file_name("coverage.png")
-                    .save_file()
-                && self
-                    .run("export.png", json!({"path": path.to_string_lossy()}))
-                    .is_some()
-            {
-                self.status = Some((format!("{} {}", tr("Saved"), path.to_string_lossy()), false));
-            }
-            if ui
-                .button(tr("Export report…"))
-                .on_hover_text(tr("One HTML page with every band's maps and figures; print it to PDF from a browser"))
-                .clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("HTML", &["html"])
-                    .set_file_name("coverage-report.html")
-                    .save_file()
-                && self
-                    .run("report.export", json!({"path": path.to_string_lossy()}))
-                    .is_some()
-            {
-                self.status = Some((format!("{} {}", tr("Saved"), path.to_string_lossy()), false));
-            }
-            if ui
-                .button(tr("Measurements…"))
-                .on_hover_text(tr("Measured signal to compare with: CSV columns x, y, band, rssi_dbm, router (mm and dBm), or JSON"))
-                .clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter(tr("Measurements"), &["csv", "json"])
-                    .pick_file()
-                && let Some(r) = self.run("survey.import", json!({"path": path.to_string_lossy()}))
-            {
-                self.status = Some((format!("{} {}", r["points"], tr("measured points read")), false));
-            }
-            if ui
-                .button(tr("Device file…"))
-                .on_hover_text(tr("A JSON list of devices: {id, name, eirp_dbm}"))
-                .clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("JSON", &["json"])
-                    .pick_file()
-                && let Some(r) = self.run("devices.load", json!({"path": path.to_string_lossy()}))
-            {
-                self.status = Some((
-                    format!("{} {}", r["from_file"], tr("devices loaded")),
-                    false,
-                ));
-            }
-            ui.separator();
-            ui.label(tr("Band"));
-            let band = self.engine.settings().band;
-            for b in Band::ALL {
-                if ui
-                    .selectable_label(band == b, format!("{} GHz", b.name()))
-                    .clicked()
-                    && b != band
-                {
-                    self.run("settings.set", json!({"band": b.name()}));
+    fn saved(&mut self, path: &std::path::Path) {
+        self.status = Some((format!("{} {}", tr("Saved"), path.to_string_lossy()), false));
+    }
+
+    fn open_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                tr("Plans, models and projects"),
+                &["dxf", "sc", "obj", "stl", "rcraft"],
+            )
+            .pick_file()
+        {
+            self.open(&path.to_string_lossy());
+        }
+    }
+
+    fn save_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter(tr("RadioCraft project"), &["rcraft"])
+            .set_file_name("plan.rcraft")
+            .save_file()
+            && self
+                .run("project.save", json!({"path": path.to_string_lossy()}))
+                .is_some()
+        {
+            self.saved(&path);
+        }
+    }
+
+    fn export_png_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("PNG", &["png"])
+            .set_file_name("coverage.png")
+            .save_file()
+            && self
+                .run("export.png", json!({"path": path.to_string_lossy()}))
+                .is_some()
+        {
+            self.saved(&path);
+        }
+    }
+
+    fn report_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("HTML", &["html"])
+            .set_file_name("coverage-report.html")
+            .save_file()
+            && self
+                .run("report.export", json!({"path": path.to_string_lossy()}))
+                .is_some()
+        {
+            self.saved(&path);
+        }
+    }
+
+    fn measurements_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter(tr("Measurements"), &["csv", "json"])
+            .pick_file()
+            && let Some(r) = self.run("survey.import", json!({"path": path.to_string_lossy()}))
+        {
+            self.status = Some((
+                format!("{} {}", r["points"], tr("measured points read")),
+                false,
+            ));
+        }
+    }
+
+    fn devices_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .pick_file()
+            && let Some(r) = self.run("devices.load", json!({"path": path.to_string_lossy()}))
+        {
+            self.status = Some((
+                format!("{} {}", r["from_file"], tr("devices loaded")),
+                false,
+            ));
+        }
+    }
+
+    /// Add a router like the selected one (or the last) where it helps most.
+    fn suggest_spot(&mut self) {
+        let like = self
+            .engine
+            .routers()
+            .iter()
+            .find(|r| Some(r.id) == self.selected)
+            .or_else(|| self.engine.routers().last())
+            .cloned();
+        let mut params = json!({"add": true});
+        if let Some(r) = like {
+            params["height"] = json!(r.height);
+            match &r.power {
+                Power::Device(id) => params["device"] = json!(id),
+                Power::Eirp(_) => {
+                    params["eirp_dbm"] = json!(
+                        self.engine
+                            .eirp(&r)
+                            .iter()
+                            .zip(Band::ALL)
+                            .filter_map(|(v, b)| v.map(|v| (b.name().to_string(), json!(v))))
+                            .collect::<serde_json::Map<_, _>>()
+                    )
                 }
             }
-            ui.separator();
-            ui.label(tr("Map"));
-            let shown = self.engine.settings().view;
-            egui::ComboBox::from_id_salt("map")
-                .selected_text(tr(shown.label()))
-                .show_ui(ui, |ui| {
-                    for m in Map::ALL {
-                        if ui.selectable_label(m == shown, tr(m.label())).clicked() && m != shown {
-                            self.run("settings.set", json!({"view": m.id()}));
-                        }
-                    }
-                });
-            ui.separator();
-            ui.label(tr("Slice height"));
-            let r = ui.add(
-                egui::DragValue::new(&mut self.slice)
-                    .range(0.0..=10_000.0)
-                    .suffix(" mm")
-                    .speed(10.0),
-            );
-            if (r.drag_stopped() || r.lost_focus())
-                && self.slice != self.engine.settings().slice_height
-            {
-                self.run("settings.set", json!({"slice_height": self.slice}));
-            }
-        });
+        }
+        if let Some(v) = self.run("router.suggest", params)
+            && let Some(spot) = v["spots"].get(0)
+        {
+            self.selected = spot["id"].as_u64();
+            self.status = Some((
+                format!(
+                    "{} {}% {}",
+                    tr("Suggested spot added:"),
+                    spot["pct_at_least_67"],
+                    tr("of the floor at −67 dBm or better")
+                ),
+                false,
+            ));
+        }
+    }
+
+    /// The menus' shortcuts, when the menus are in the window (macOS's menu bar handles them).
+    fn shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::{Key, KeyboardShortcut, Modifiers};
+        if self.native.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let pressed = |m: Modifiers, k: Key| {
+            ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)))
+        };
+        let shift_cmd = Modifiers::COMMAND | Modifiers::SHIFT;
+        let command = if pressed(Modifiers::COMMAND, Key::O) {
+            "file.open"
+        } else if pressed(Modifiers::COMMAND, Key::S) {
+            "file.save"
+        } else if pressed(shift_cmd, Key::E) {
+            "file.export_report"
+        } else if pressed(Modifiers::COMMAND, Key::Num0) {
+            "view.fit"
+        } else {
+            return;
+        };
+        self.menu_command(ctx, &craft_menu::CommandRef::new(command));
     }
 
     fn sources_panel(&mut self, ui: &mut egui::Ui) {
@@ -392,33 +455,7 @@ impl App {
             .on_hover_text(tr("Add a router where it raises the floor at −67 dBm or better the most, like the selected one"))
             .clicked()
         {
-            // A router like the selected one (or the last), on the shown band.
-            let like = self
-                .engine
-                .routers()
-                .iter()
-                .find(|r| Some(r.id) == self.selected)
-                .or_else(|| self.engine.routers().last())
-                .cloned();
-            let mut params = json!({"add": true});
-            if let Some(r) = like {
-                params["height"] = json!(r.height);
-                match &r.power {
-                    Power::Device(id) => params["device"] = json!(id),
-                    Power::Eirp(_) => {
-                        params["eirp_dbm"] = json!(self.engine.eirp(&r).iter().zip(Band::ALL).filter_map(|(v, b)| v.map(|v| (b.name().to_string(), json!(v)))).collect::<serde_json::Map<_, _>>())
-                    }
-                }
-            }
-            if let Some(v) = self.run("router.suggest", params)
-                && let Some(spot) = v["spots"].get(0)
-            {
-                self.selected = spot["id"].as_u64();
-                self.status = Some((
-                    format!("{} {}% {}", tr("Suggested spot added:"), spot["pct_at_least_67"], tr("of the floor at −67 dBm or better")),
-                    false,
-                ));
-            }
+            self.suggest_spot();
         }
         let devices: Vec<(String, String)> = self
             .engine
@@ -460,11 +497,18 @@ impl App {
                     }
                 });
             ui.horizontal(|ui| {
-                ui.label(tr("Height"));
+                // From the top a router's third coordinate is its height; from a side, its depth
+                // toward the viewer.
+                let top = self.engine.settings().viewpoint == "top"
+                    || !self.engine.plan().is_some_and(|p| {
+                        let l = p.path.to_ascii_lowercase();
+                        l.ends_with(".obj") || l.ends_with(".stl") || l.ends_with(".sc")
+                    });
+                ui.label(if top { tr("Height") } else { tr("Depth") });
                 let mut h = r.height;
                 let resp = ui.add(
                     egui::DragValue::new(&mut h)
-                        .range(0.0..=10_000.0)
+                        .range(-100_000.0..=100_000.0)
                         .suffix(" mm")
                         .speed(10.0),
                 );
@@ -903,6 +947,7 @@ impl App {
             }
             response.request_focus();
         }
+        self.pointer = response.hover_pos().map(|p| to_plan(&self.view, p));
         if let Some(pos) = response.hover_pos()
             && !self.adding
         {
@@ -977,37 +1022,72 @@ fn preset_label(id: &str) -> &'static str {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(menu) = &mut self.native {
+            menu.raw_input(raw_input);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.take_screenshot(&ctx);
-        egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
-        egui::Panel::bottom("status").show(ui, |ui| {
-            let (text, error) = self.status.clone().unwrap_or_else(|| {
-                (
-                    tr("Drag a router to move it; scroll to zoom; drag the plan to pan."),
-                    false,
-                )
+        // The macOS menu bar: what was chosen since the last frame, then the menus' state.
+        if self.native.is_some() {
+            let gate = craft_menu::Gate {
+                modal: self.about,
+                recording_shortcut: false,
+                text_editing: ctx.egui_wants_keyboard_input(),
+            };
+            let clicks = self.native.as_mut().map(|m| {
+                m.set_gate(gate);
+                m.take_clicks(&ctx)
             });
-            ui.label(egui::RichText::new(text).color(if error {
-                TOKENS.error
-            } else {
-                TOKENS.text_dim
-            }));
-        });
-        egui::Panel::left("sources")
-            .resizable(true)
-            .default_size(260.0)
-            .show(ui, |ui| self.sources_panel(ui));
-        egui::Panel::right("routers")
-            .resizable(true)
-            .default_size(300.0)
-            .max_size(380.0)
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("routers")
-                    .show(ui, |ui| self.routers_panel(ui));
-            });
-        egui::CentralPanel::default().show(ui, |ui| self.plan_view(ui));
+            for c in clicks.unwrap_or_default() {
+                self.menu_command(&ctx, &c);
+            }
+            let state = self.menu_state();
+            let bar = self.menu_model();
+            if let Some(m) = self.native.as_mut() {
+                let _ = m.sync_with(state, || {
+                    craft_menu::mac_layout(&bar, &craft_menu::LayoutOptions::new(header::APP_NAME))
+                });
+            }
+        }
+        self.shortcuts(&ctx);
+        egui::Panel::top("app_bar")
+            .exact_size(header::BAR_HEIGHT)
+            .frame(
+                egui::Frame::new()
+                    .fill(TOKENS.bar)
+                    .inner_margin(egui::Margin::symmetric(8, 0)),
+            )
+            .show(ui, |ui| self.app_bar(ui));
+        let show_plan = !self.home && self.engine.plan().is_some();
+        if show_plan {
+            egui::Panel::top("tools").show(ui, |ui| self.tool_bar(ui));
+        }
+        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        if show_plan {
+            egui::Panel::left("sources")
+                .resizable(true)
+                .default_size(260.0)
+                .show(ui, |ui| self.sources_panel(ui));
+            egui::Panel::right("routers")
+                .resizable(true)
+                .default_size(300.0)
+                .max_size(380.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("routers")
+                        .show(ui, |ui| self.routers_panel(ui));
+                });
+            egui::CentralPanel::default().show(ui, |ui| self.plan_view(ui));
+        } else {
+            egui::CentralPanel::default().show(ui, |ui| self.start_page(ui));
+        }
+        self.about_window(&ctx);
+        #[cfg(target_os = "macos")]
+        craft_window::title_bar::sync_movable(&ctx, &mut self.movable);
     }
 }
 
