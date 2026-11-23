@@ -549,9 +549,10 @@ impl Engine {
             "project.open" => self.project_open(command, p),
             "project.new" => {
                 let devices = (self.devices.clone(), self.devices_file.clone());
-                let revision = self.revision;
+                let (revision, cache) = (self.revision, self.sc_cache.take());
                 *self = Engine::default();
                 (self.devices, self.devices_file) = devices;
+                self.sc_cache = cache;
                 self.revision = revision.wrapping_add(1);
                 Ok(json!({}))
             }
@@ -842,6 +843,19 @@ impl Engine {
         );
         self.sc_cache = Some((path.to_string(), mtime, len, converted.clone()));
         Ok(converted)
+    }
+
+    /// Hand the engine a SolidCraft export made elsewhere (a window exports in the background),
+    /// so opening that design (`plan.open`, `project.open`) doesn't export it again.
+    pub fn prime_sc(&mut self, path: &str, converted: crate::sc::Converted) -> Result<()> {
+        let meta = std::fs::metadata(path).map_err(|e| bad("plan.open", format!("{path}: {e}")))?;
+        self.sc_cache = Some((
+            path.to_string(),
+            meta.modified().ok(),
+            meta.len(),
+            Arc::new(converted),
+        ));
+        Ok(())
     }
 
     /// Whether the open plan is a model (cut along the viewpoint) rather than a drawing.
@@ -2123,7 +2137,11 @@ impl Engine {
         if project.get("format").and_then(Value::as_str) != Some("radiocraft-project/1") {
             return Err(bad(command, format!("{path}: not a RadioCraft project")));
         }
-        let mut fresh = Engine::default();
+        // A design exported already (perhaps in the background) isn't exported again.
+        let mut fresh = Engine {
+            sc_cache: self.sc_cache.clone(),
+            ..Engine::default()
+        };
         if let Some(df) = project.get("devices_file").and_then(Value::as_str) {
             fresh.execute("devices.load", &json!({"path": df}))?;
         }

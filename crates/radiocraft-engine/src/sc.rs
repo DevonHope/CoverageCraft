@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -19,6 +19,8 @@ use crate::viewpoint::{Basis, PlanView};
 
 /// How long SolidCraft may take to rebuild and export a design.
 const TIME_LIMIT: Duration = Duration::from_secs(300);
+/// The error a cancelled export ends with.
+pub const CANCELLED: &str = "cancelled";
 /// The largest OBJ read back (bytes).
 const MAX_OBJ_BYTES: u64 = 1 << 30;
 
@@ -81,17 +83,23 @@ fn scratch() -> Result<PathBuf, String> {
 
 /// Export the design at `path` with SolidCraft.
 pub fn convert(path: &Path) -> Result<Converted, String> {
+    convert_with(path, &AtomicBool::new(false))
+}
+
+/// As [`convert`], stopping SolidCraft as soon as `cancel` is set (from another thread): a
+/// window can run the export in the background and offer to cancel it.
+pub fn convert_with(path: &Path, cancel: &AtomicBool) -> Result<Converted, String> {
     let cli = find_cli().ok_or(
         "opening a SolidCraft design needs SolidCraft installed (its solidcraft-cli), or \
          RADIOCRAFT_SOLIDCRAFT_CLI set to it; or export the design from SolidCraft as OBJ",
     )?;
     let dir = scratch()?;
-    let result = run(&cli, path, &dir);
+    let result = run(&cli, path, &dir, cancel);
     let _ = std::fs::remove_dir_all(&dir);
     result
 }
 
-fn run(cli: &Path, design: &Path, dir: &Path) -> Result<Converted, String> {
+fn run(cli: &Path, design: &Path, dir: &Path, cancel: &AtomicBool) -> Result<Converted, String> {
     let obj = dir.join("design.obj");
     let script = dir.join("export.json");
     let commands = json!({"commands": [
@@ -125,6 +133,11 @@ fn run(cli: &Path, design: &Path, dir: &Path) -> Result<Converted, String> {
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
+            Ok(None) if cancel.load(Ordering::Relaxed) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(CANCELLED.into());
+            }
             Ok(None) if started.elapsed() > TIME_LIMIT => {
                 let _ = child.kill();
                 let _ = child.wait();

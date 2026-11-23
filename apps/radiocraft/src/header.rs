@@ -513,6 +513,27 @@ impl App {
 
     /// The last message, the pointer's position, the scale and the viewpoint.
     pub(super) fn status_bar(&mut self, ui: &mut egui::Ui) {
+        // A SolidCraft design on its way: what, how long, and a way out.
+        if let Some(p) = &self.pending {
+            let name = std::path::Path::new(&p.design)
+                .file_name()
+                .map_or_else(|| p.design.clone(), |n| n.to_string_lossy().to_string());
+            let secs = p.started.elapsed().as_secs();
+            let mut cancel = false;
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!(
+                    "{} {name} {} ({secs} s)",
+                    tr("Opening"),
+                    tr("with SolidCraft…")
+                ));
+                cancel = ui.small_button(tr("Cancel")).clicked();
+            });
+            if cancel {
+                p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            return;
+        }
         ui.horizontal(|ui| {
             let (text, error) = self.status.clone().unwrap_or_else(|| {
                 (
@@ -566,14 +587,27 @@ impl App {
                 .color(TOKENS.text_dim),
             );
             ui.add_space(20.0);
+            let busy = self.pending.is_some();
             if ui
-                .add(
+                .add_enabled(
+                    !busy,
                     egui::Button::new(RichText::new(tr("Open a plan or model…")).size(16.0))
                         .min_size(egui::vec2(260.0, 36.0)),
                 )
                 .clicked()
             {
                 self.open_dialog();
+            }
+            if busy {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.add_space((ui.available_width() - 260.0).max(0.0) / 2.0);
+                    ui.spinner();
+                    ui.label(
+                        RichText::new(tr("SolidCraft is exporting the design…"))
+                            .color(TOKENS.text_dim),
+                    );
+                });
             }
             if let Some(name) = self.engine.plan().map(|p| p.path.clone()) {
                 ui.add_space(6.0);

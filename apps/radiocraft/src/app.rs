@@ -64,6 +64,34 @@ pub struct App {
     movable: Option<bool>,
     /// The plan point under the pointer.
     pointer: Option<[f64; 2]>,
+    /// A SolidCraft design being exported in the background, before it opens.
+    pending: Option<Pending>,
+}
+
+/// A file waiting for SolidCraft to export its design.
+struct Pending {
+    /// What to open once the export is in: the design, or a project whose plan it is.
+    open: String,
+    /// The design SolidCraft is exporting.
+    design: String,
+    done: std::sync::mpsc::Receiver<Result<radiocraft_engine::sc::Converted, String>>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    started: std::time::Instant,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl Drop for App {
+    /// Quitting while SolidCraft exports: stop it and let its temporary folder go, rather than
+    /// leave it running on its own. It checks for the stop every 50 ms; this waits up to 2 s.
+    fn drop(&mut self) {
+        if let Some(p) = self.pending.take() {
+            p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !p.thread.is_finished() && std::time::Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
 }
 
 /// The width of a name in the layers and objects list.
@@ -100,6 +128,7 @@ impl App {
             leading,
             movable: None,
             pointer: None,
+            pending: None,
         };
         if let Some(path) = path {
             app.open(&path);
@@ -155,6 +184,11 @@ impl App {
     /// `--screenshot`: once the window has settled, ask for a picture of it; save it when it
     /// comes, then close.
     fn take_screenshot(&mut self, ctx: &egui::Context) {
+        // A design still being exported isn't shown yet: wait for it.
+        if self.pending.is_some() {
+            ctx.request_repaint();
+            return;
+        }
         let Some((path, frames)) = self.screenshot.as_mut() else {
             return;
         };
@@ -201,7 +235,91 @@ impl App {
         }
     }
 
+    /// Open a plan, model or project. A SolidCraft design (or a project of one) is exported by
+    /// SolidCraft in the background first, so the window stays free; it opens when that's done.
     fn open(&mut self, path: &str) {
+        let lower = path.to_ascii_lowercase();
+        let design = if lower.ends_with(".sc") {
+            Some(path.to_string())
+        } else if lower.ends_with(".rcraft") {
+            std::fs::read(path)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                .and_then(|p| p["plan"].as_str().map(str::to_string))
+                .filter(|plan| plan.to_ascii_lowercase().ends_with(".sc"))
+        } else {
+            None
+        };
+        if let Some(design) = design {
+            self.export_in_background(path, design);
+            return;
+        }
+        self.open_now(path);
+    }
+
+    fn export_in_background(&mut self, open: &str, design: String) {
+        if let Some(p) = self.pending.take() {
+            p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (flag, file) = (cancel.clone(), design.clone());
+        let spawned = std::thread::Builder::new()
+            .name("solidcraft-export".into())
+            .spawn(move || {
+                let _ = tx.send(radiocraft_engine::sc::convert_with(
+                    std::path::Path::new(&file),
+                    &flag,
+                ));
+            });
+        match spawned {
+            Ok(thread) => {
+                self.pending = Some(Pending {
+                    open: open.to_string(),
+                    design,
+                    done: rx,
+                    cancel,
+                    started: std::time::Instant::now(),
+                    thread,
+                });
+                self.status = None;
+            }
+            // No thread: export here, as before.
+            Err(_) => self.open_now(open),
+        }
+    }
+
+    /// Each frame: open the design once its export is in.
+    fn poll_pending(&mut self, ctx: &egui::Context) {
+        let Some(p) = &self.pending else { return };
+        match p.done.try_recv() {
+            Ok(result) => {
+                let Some(p) = self.pending.take() else { return };
+                match result {
+                    Ok(converted) => {
+                        if let Err(e) = self.engine.prime_sc(&p.design, converted) {
+                            self.status = Some((e.to_string(), true));
+                            return;
+                        }
+                        self.open_now(&p.open);
+                    }
+                    Err(e) if e == radiocraft_engine::sc::CANCELLED => {
+                        self.status = Some((tr("Opening cancelled"), false));
+                    }
+                    Err(e) => self.status = Some((format!("{}: {e}", p.design), true)),
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100))
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending = None;
+                self.status = Some((tr("SolidCraft's export stopped without a result"), true));
+            }
+        }
+    }
+
+    fn open_now(&mut self, path: &str) {
         let command = if path.to_ascii_lowercase().ends_with(".rcraft") {
             "project.open"
         } else {
@@ -1037,6 +1155,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.take_screenshot(&ctx);
+        self.poll_pending(&ctx);
         // The macOS menu bar: what was chosen since the last frame, then the menus' state.
         if self.native.is_some() {
             let gate = craft_menu::Gate {

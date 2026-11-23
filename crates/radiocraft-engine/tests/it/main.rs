@@ -926,6 +926,68 @@ fn undoing_a_viewpoint_cuts_the_model_again() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A design exported on another thread (as the window does) opens from that export, also
+/// through a project; a cancelled export stops at once.
+#[test]
+fn a_design_exported_in_the_background_opens_from_it() {
+    use radiocraft_engine::sc;
+    if sc::find_cli().is_none() {
+        eprintln!("SolidCraft isn't installed here (no solidcraft-cli): skipped");
+        return;
+    }
+    let design = fixture("solidcraft-demo.sc");
+    let cancel = std::sync::atomic::AtomicBool::new(true);
+    let started = std::time::Instant::now();
+    assert_eq!(
+        sc::convert_with(std::path::Path::new(&design), &cancel)
+            .err()
+            .as_deref(),
+        Some(sc::CANCELLED)
+    );
+    assert!(started.elapsed().as_secs_f64() < 5.0);
+    let path = design.clone();
+    let mut converted = std::thread::spawn(move || sc::convert(std::path::Path::new(&path)))
+        .join()
+        .unwrap()
+        .unwrap();
+    // Marked, to tell this export from a new one.
+    converted.notes.push("exported in the background".into());
+    let mut e = Engine::new();
+    e.prime_sc(&design, converted).unwrap();
+    let info = run(&mut e, "plan.open", json!({"path": design}));
+    assert!(
+        info["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n == "exported in the background"),
+        "{info}"
+    );
+    let dir = std::env::temp_dir().join(format!("radiocraft-bg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let project = dir.join("p.rcraft");
+    run(
+        &mut e,
+        "project.save",
+        json!({"path": project.to_string_lossy()}),
+    );
+    run(
+        &mut e,
+        "project.open",
+        json!({"path": project.to_string_lossy()}),
+    );
+    let again = run(&mut e, "plan.info", json!({}));
+    assert!(
+        again["notes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n == "exported in the background"),
+        "{again}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A project saved before channels and maps existed opens, with them unset.
 #[test]
 fn an_older_project_opens() {

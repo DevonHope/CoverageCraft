@@ -154,8 +154,9 @@ real signal is often a few dB either side. Use it to compare placements, then ch
 
 Known limits:
 
-- A SolidCraft design opens through the installed SolidCraft, on the window's thread: a large
-  design keeps the window busy while SolidCraft exports it. An installed SolidCraft older than
+- A SolidCraft design opens through the installed SolidCraft. In the window SolidCraft exports it
+  in the background (the status bar shows it, with Cancel); the CLI and scripts wait for it. An
+  installed SolidCraft older than
   the build that saved the design may read it with warnings (they show in the plan's notes);
   `RADIOCRAFT_SOLIDCRAFT_CLI` can point at another build's `solidcraft-cli`.
 - Saved SolidCraft views are read when they are Z-up; a DXF's named views are used when they
