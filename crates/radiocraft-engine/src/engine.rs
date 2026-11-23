@@ -8,7 +8,9 @@ use serde_json::{Value, json};
 use crate::devices::{self, Device, EIRP_CAP_DBM};
 use crate::dxf::read_dxf;
 use crate::floors::{Floor, MAX_FLOORS, slab_db};
-use crate::materials::{Band, LossOverrides, MAX_LOSS_DB, Material, RF_PRESETS, rf_preset};
+use crate::materials::{
+    Band, LossOverrides, MAX_LOSS_DB, Material, RF_PRESETS, preset_key, rf_preset,
+};
 use crate::mesh::{Up, read_mesh};
 use crate::model::{self, Cell, Emitter, Grid, Model, Scratch, WallMap};
 use crate::model::{Building, Storey};
@@ -326,7 +328,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "survey.calibrate",
-        "{apply?: bool} → fit the path-loss exponent and a per-band offset to the measured points; the error before and after; apply: use them",
+        "{apply?: bool, walls?: bool} → fit the path-loss exponent, a per-band offset and (walls, the default) the losses of materials enough points cross to the measured points; the error before, after and held out (each point predicted by a fit without it); apply: use them",
     ),
     ("survey.clear", "{} → forget the measured points"),
     (
@@ -2377,6 +2379,7 @@ impl Engine {
         let shown = self.model();
         let side = self.side_view();
         let mut scratch = Scratch::default();
+        let mut crossings = Vec::new();
         let mut out = Vec::new();
         for (i, pt) in self.survey.iter().enumerate() {
             // Each point is compared on its own floor (from a side, only the shown floor's).
@@ -2414,14 +2417,20 @@ impl Engine {
                 .sqrt()
                 / 1000.0)
                 .max(model::MIN_DISTANCE_M);
+            let (from, to) = (
+                [e.at[0], e.at[1], e.height],
+                [pt.at[0], pt.at[1], model.client_height],
+            );
             let rest = pt.rssi_dbm - eirp
                 + model::fspl_1m(pt.band)
-                + walls.loss(
-                    [e.at[0], e.at[1], e.height],
-                    [pt.at[0], pt.at[1], model.client_height],
-                    pt.band,
-                    &mut scratch,
-                );
+                + walls.loss(from, to, pt.band, &mut scratch);
+            // The walls a calibration can fit: those of a preset (guessed ones too).
+            crossings.clear();
+            walls.crossings(from, to, pt.band, &mut scratch, &mut crossings);
+            let crossed = crossings
+                .iter()
+                .filter_map(|(name, loss)| preset_key(name).map(|k| (k, *loss)))
+                .collect();
             out.push((
                 i,
                 pt.rssi_dbm,
@@ -2430,6 +2439,7 @@ impl Engine {
                     band: pt.band,
                     log_d: d.log10(),
                     rest,
+                    crossed,
                 },
             ));
         }
@@ -2495,38 +2505,166 @@ impl Engine {
                 "no measured point can be compared: add routers in their bands, or name routers that are there",
             ));
         }
-        let terms: Vec<survey::Term> = before
-            .iter()
-            .map(|r| survey::Term {
-                band: r.3.band,
-                log_d: r.3.log_d,
-                rest: r.3.rest,
-            })
-            .collect();
-        let (exponent, offsets) = survey::fit(&terms, self.settings.exponent, 1.5, 6.0);
+        let terms: Vec<survey::Term> = before.iter().map(|r| r.3.clone()).collect();
+        let walls_on = p.get("walls").and_then(Value::as_bool).unwrap_or(true);
+        let candidates = survey::wall_candidates(&terms);
+        let qualified: Vec<(&'static str, Band, f64)> = if walls_on {
+            candidates
+                .iter()
+                .filter(|c| c.1)
+                .map(|c| (c.0.material, c.0.band, c.0.prior))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let current = self.settings.exponent;
         let saved = self.settings.clone();
-        self.settings.exponent = exponent;
-        for (slot, o) in self.settings.offset_db.iter_mut().zip(offsets) {
-            if let Some(o) = o {
-                *slot = o.clamp(-30.0, 30.0);
+        // With no wall to fit, the plain fit (as before walls could be fitted).
+        let (exponent, offsets, mut fitted, mut clamped) = if qualified.is_empty() {
+            let (n, o) = survey::fit(
+                &terms,
+                current,
+                survey::EXPONENT_RANGE.0,
+                survey::EXPONENT_RANGE.1,
+            );
+            let (lo, hi) = survey::OFFSET_RANGE;
+            let clamped: Vec<String> = Band::ALL
+                .iter()
+                .zip(o)
+                .filter(|(_, o)| o.is_some_and(|o| !(lo..=hi).contains(&o)))
+                .map(|(b, _)| format!("offset {}", b.name()))
+                .collect();
+            (
+                n,
+                o.map(|o| o.map(|v| v.clamp(lo, hi))),
+                Vec::new(),
+                clamped,
+            )
+        } else {
+            let f = survey::fit_walls(&terms, current, &qualified).ok_or_else(|| {
+                bad(command, "the measured points can't settle the walls' losses (walls: false fits only the exponent and offsets)")
+            })?;
+            (f.exponent, f.offsets, f.losses, f.clamped)
+        };
+        let set = |e: &mut Engine, n: f64, o: [Option<f64>; 3], losses: &[survey::WallLoss]| {
+            e.settings.exponent = n;
+            for (slot, o) in e.settings.offset_db.iter_mut().zip(o) {
+                if let Some(o) = o {
+                    *slot = o;
+                }
+            }
+            for w in losses {
+                let entry = e
+                    .settings
+                    .loss_db
+                    .entry(w.material.to_string())
+                    .or_insert([None; 3]);
+                if let Some(slot) = entry.get_mut(w.band.index()) {
+                    *slot = Some((w.value * 10.0).round() / 10.0);
+                }
+            }
+            e.changed(true);
+        };
+        set(self, exponent, offsets, &fitted);
+        // A new loss can change which of two overlapping walls counts: count the crossings with
+        // the fitted losses and, if they changed, fit once more from there.
+        let mut after = self.survey_terms();
+        let same = |a: &[(usize, f64, f64, survey::Term)],
+                    b: &[(usize, f64, f64, survey::Term)]| {
+            a.len() == b.len()
+                && a.iter().zip(b).all(|(x, y)| {
+                    x.0 == y.0
+                        && x.3
+                            .crossed
+                            .iter()
+                            .map(|c| c.0)
+                            .eq(y.3.crossed.iter().map(|c| c.0))
+                })
+        };
+        let mut crossings_changed = false;
+        let (mut exponent, mut offsets) = (exponent, offsets);
+        if !fitted.is_empty() && !same(&before, &after) {
+            crossings_changed = true;
+            let again: Vec<survey::Term> = after.iter().map(|r| r.3.clone()).collect();
+            if let Some(f) = survey::fit_walls(&again, current, &qualified) {
+                self.settings = saved.clone();
+                set(self, f.exponent, f.offsets, &f.losses);
+                (exponent, offsets, fitted, clamped) = (f.exponent, f.offsets, f.losses, f.clamped);
+                let next = self.survey_terms();
+                crossings_changed = !same(&after, &next);
+                after = next;
             }
         }
-        self.changed(false);
-        let after = self.survey_terms();
-        let fitted = self.settings.clone();
         let apply = p.get("apply").and_then(Value::as_bool).unwrap_or(false);
         if !apply {
             self.settings = saved;
-            self.changed(false);
+            self.changed(true);
         }
+        // Each point predicted by a fit made without it: the honest measure of the fit.
+        let held: Vec<(usize, f64, f64, survey::Term)> =
+            survey::held_out(&terms, current, &qualified, 5)
+                .into_iter()
+                .map(|(band, err)| {
+                    (
+                        0,
+                        err,
+                        0.0,
+                        survey::Term {
+                            band,
+                            log_d: 0.0,
+                            rest: 0.0,
+                            crossed: Vec::new(),
+                        },
+                    )
+                })
+                .collect();
+        let rms = |rows: &[(usize, f64, f64, survey::Term)]| {
+            let d: Vec<f64> = rows.iter().map(|r| r.1 - r.2).collect();
+            survey::errors(&d).map(|e| e.rms)
+        };
+        let worse = matches!((rms(&held), rms(&before)), (Some(h), Some(b)) if h > b);
+        for w in &mut fitted {
+            w.points = candidates
+                .iter()
+                .find(|c| c.0.material == w.material && c.0.band == w.band)
+                .map_or(0, |c| c.0.points);
+        }
+        let mut walls: Vec<survey::WallLoss> = candidates
+            .iter()
+            .filter(|c| {
+                !fitted
+                    .iter()
+                    .any(|f| f.material == c.0.material && f.band == c.0.band)
+            })
+            .map(|c| c.0.clone())
+            .collect();
+        walls.extend(fitted);
+        walls.sort_by(|a, b| (a.material, a.band).cmp(&(b.material, b.band)));
         let round = |v: f64| (v * 100.0).round() / 100.0;
-        Ok(json!({
-            "exponent": round(fitted.exponent),
-            "offset_db": band_map(&offsets.map(|o| o.map(|v| round(v.clamp(-30.0, 30.0))))),
+        let mut out = json!({
+            "exponent": round(exponent),
+            "offset_db": band_map(&offsets.map(|o| o.map(round))),
+            "walls": walls.iter().map(|w| json!({
+                "material": w.material,
+                "band": w.band.name(),
+                "points": w.points,
+                "prior_db": round(w.prior),
+                "fitted_db": round(w.value),
+                "status": w.status.id(),
+            })).collect::<Vec<_>>(),
+            "clamped": clamped,
+            "crossings_changed": crossings_changed,
             "before": Self::errors_json(&before),
             "after": Self::errors_json(&after),
+            "held_out": Self::errors_json(&held),
             "applied": apply,
-        }))
+        });
+        if worse {
+            out["note"] = json!(
+                "the fit predicts points it wasn't fitted to worse than the model as it was: better not to apply it"
+            );
+        }
+        Ok(out)
     }
 
     fn project_save(&mut self, command: &str, p: &Value) -> Result<Value> {

@@ -1409,3 +1409,160 @@ fn calibrated_wall_losses_apply_on_every_floor() {
     assert!(e.settings().loss_db.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Wall losses come back from points made by a known model: concrete 28 dB at 5 GHz (its preset
+/// says 20), with the exponent and offset, and the doors' loss stays where it was right; walls:
+/// false fits only the exponent and offsets; with noise the held-out error is no better than the
+/// fitted one; applying is one undoable step.
+#[test]
+fn calibration_finds_wall_losses() {
+    let dir = std::env::temp_dir().join(format!("radiocraft-walls-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let setup = |e: &mut Engine| {
+        run(
+            e,
+            "plan.open",
+            json!({"path": fixture("cadcraft-apartment.dxf")}),
+        );
+        run(
+            e,
+            "material.set",
+            json!({"source": "A-WALL", "material": "concrete"}),
+        );
+        for (name, at) in [("Hall", [2500, 2500]), ("Den", [9000, 6000])] {
+            run(
+                e,
+                "router.add",
+                json!({"at": at, "height": 2400, "eirp_dbm": 20, "name": name}),
+            );
+        }
+    };
+    let mut truth = Engine::new();
+    setup(&mut truth);
+    run(
+        &mut truth,
+        "settings.set",
+        json!({"exponent": 2.8, "offset_db": {"5": -3},
+               "loss_db": {"concrete": {"5": 28}}}),
+    );
+    let mut survey = |noise: f64| {
+        let mut csv = String::from("x,y,band,rssi_dbm,router\n");
+        let mut k = 0u32;
+        // Indoors, and a row outside the south windows (seen through the glass).
+        let spots: Vec<[i32; 2]> = (500..12500)
+            .step_by(700)
+            .flat_map(|x| (500..8500).step_by(700).map(move |y| [x, y]))
+            .chain((1000..11000).step_by(250).map(|x| [x, -800]))
+            .collect();
+        for [x, y] in spots {
+            {
+                for r in ["Hall", "Den"] {
+                    let at = run(&mut truth, "coverage.at", json!({"at": [x, y]}));
+                    let Some(v) = at["bands"]["5"]["routers"]
+                        .as_array()
+                        .and_then(|a| a.iter().find(|s| s["name"] == r))
+                        .and_then(|s| s["rssi_dbm"].as_f64())
+                    else {
+                        continue;
+                    };
+                    // A meter hears no further down.
+                    if v < -95.0 {
+                        continue;
+                    }
+                    // A fixed pseudo-random spread, ±noise.
+                    k = k.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    let n = (f64::from(k % 1000) / 500.0 - 1.0) * noise;
+                    csv += &format!("{x},{y},5,{},{r}\n", v + n);
+                }
+            }
+        }
+        csv
+    };
+    let open = |csv: &str, name: &str| {
+        let path = dir.join(name);
+        std::fs::write(&path, csv).unwrap();
+        let mut e = Engine::new();
+        setup(&mut e);
+        run(
+            &mut e,
+            "survey.import",
+            json!({"path": path.to_string_lossy()}),
+        );
+        e
+    };
+    let mut e = open(&survey(0.0), "exact.csv");
+    assert!(e.survey().len() > 200, "{}", e.survey().len());
+    let fit = run(&mut e, "survey.calibrate", json!({}));
+    let wall = |fit: &Value, m: &str| {
+        fit["walls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["material"] == m && w["band"] == "5")
+            .cloned()
+            .unwrap_or_else(|| panic!("no {m}: {fit}"))
+    };
+    let concrete = wall(&fit, "concrete");
+    assert_eq!(concrete["status"], "fitted", "{fit}");
+    assert!(
+        (concrete["fitted_db"].as_f64().unwrap() - 28.0).abs() < 1.0,
+        "{fit}"
+    );
+    assert!(
+        (fit["exponent"].as_f64().unwrap() - 2.8).abs() < 0.1,
+        "{fit}"
+    );
+    assert!(
+        (fit["offset_db"]["5"].as_f64().unwrap() + 3.0).abs() < 1.0,
+        "{fit}"
+    );
+    for w in fit["walls"].as_array().unwrap() {
+        if w["material"] != "concrete" {
+            let (f, p) = (
+                w["fitted_db"].as_f64().unwrap(),
+                w["prior_db"].as_f64().unwrap(),
+            );
+            assert!((f - p).abs() < 0.2, "{fit}");
+        }
+    }
+    assert!(fit["after"]["5"]["rms_db"].as_f64().unwrap() < 0.5, "{fit}");
+    assert!(fit["note"].is_null(), "{fit}");
+    // Without apply, nothing changes.
+    assert!(e.settings().loss_db.is_empty());
+    // Walls off: no loss moves.
+    let plain = run(&mut e, "survey.calibrate", json!({"walls": false}));
+    assert!(
+        plain["walls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|w| w["status"] == "kept"),
+        "{plain}"
+    );
+    // Applying is one step, undone in one.
+    run(&mut e, "survey.calibrate", json!({"apply": true}));
+    let got = e.settings().loss_db.get("concrete").copied().unwrap();
+    assert!((got[1].unwrap() - 28.0).abs() < 1.0, "{got:?}");
+    assert!(
+        run(&mut e, "survey.compare", json!({}))["bands"]["5"]["rms_db"]
+            .as_f64()
+            .unwrap()
+            < 0.5
+    );
+    run(&mut e, "edit.undo", json!({}));
+    assert!(e.settings().loss_db.is_empty());
+    assert_eq!(e.settings().exponent, 2.2);
+    // With noise the error on points the fit didn't see is the larger.
+    let mut noisy = open(&survey(6.0), "noisy.csv");
+    let fit = run(&mut noisy, "survey.calibrate", json!({}));
+    let (held, after) = (
+        fit["held_out"]["5"]["rms_db"].as_f64().unwrap(),
+        fit["after"]["5"]["rms_db"].as_f64().unwrap(),
+    );
+    assert!(held >= after, "{fit}");
+    assert!(
+        (wall(&fit, "concrete")["fitted_db"].as_f64().unwrap() - 28.0).abs() < 2.0,
+        "{fit}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
