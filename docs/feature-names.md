@@ -15,7 +15,7 @@ for whichever name goes forward.
 | SignalCraft | No | Already the name of a software product. |
 | RangeCraft | No | A live trademark filing. |
 | WaveCraft | No | A company name in software. |
-| RadioCraft | **Unclear** (working name) | No live software mark found in the web search, and "Radio-Craft" the 1948 magazine is long gone. But GitHub has several "RadioCraft" projects, among them an ARRL-funded Minecraft mod for amateur radio (RadiocraftARRL/RadioCraft) and a Rust radio-automation rebuild (zoltarffai/radiocraft); and Radiocrafts AS makes RF radio modules, the same field as this app. Under "unclear means no" this needs the register search, or another name. |
+| RadioCraft | **Kept** (2026-11-22, the maintainer's decision), with the conflicts noted | No live software mark found in the web search, and "Radio-Craft" the 1948 magazine is long gone. But GitHub has several "RadioCraft" projects, among them an ARRL-funded Minecraft mod for amateur radio (RadiocraftARRL/RadioCraft) and a Rust radio-automation rebuild (zoltarffai/radiocraft); and Radiocrafts AS makes RF radio modules, the same field as this app. The Craft standard says unclear means no, so the trademark register search (USPTO, EUIPO, WIPO; classes 9 and 42) must come back clear before the beta form is sent, and the form should mention these uses. |
 | CoverageCraft | Clear so far | No GitHub repositories or crates; no web hits. Register search to do. |
 | AirwaveCraft | Clear so far | No GitHub repositories or crates; no web hits. Register search to do. |
 

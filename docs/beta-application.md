@@ -41,8 +41,10 @@ RadioCraft
   Netcraft Ltd for software and computer services, so it fails the Craft naming standard
   (`standards/naming.md`, "unclear means no"). "RadioCraft", the working name, is unclear too:
   an ARRL-funded Minecraft radio mod and other software projects use it, and Radiocrafts AS makes
-  RF radio modules. CoverageCraft and AirwaveCraft are clear so far. See `docs/feature-names.md`;
-  pick the name and run the trademark register search before sending.
+  RF radio modules. The maintainer chose to keep RadioCraft (2026-11-22); CoverageCraft and
+  AirwaveCraft are the fallbacks. Before sending: run the trademark register search and record it
+  in `docs/feature-names.md`, and mention the other uses of the name in the form so the beta team
+  can judge.
 - **"Wi-Fi"** is a Wi-Fi Alliance trademark. The description uses it only to say what the app
   plans, as the naming standard allows for a technology the app works with. Feature labels say
   "signal", "coverage" and "router" instead.
