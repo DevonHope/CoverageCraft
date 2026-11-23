@@ -12,6 +12,7 @@ use crate::mesh::{Up, read_mesh};
 use crate::model::{self, Cell, Emitter, Grid, Model, Scratch, WallMap};
 use crate::plan::{FloorPlan, SourceKind};
 use crate::radio::{Channel, HEARD_DBM, View, default_width, link_rate};
+use crate::survey::{self, Point};
 use crate::views::{self, Derived, LegendRow};
 
 /// The largest plan or project file read, in bytes.
@@ -84,6 +85,8 @@ pub struct Settings {
     pub view: View,
     /// The receiving device's spatial streams, for the link rate.
     pub client_streams: u8,
+    /// Added to every signal in each band (dB): a calibration to measurements.
+    pub offset_db: [f64; 3],
 }
 
 impl Default for Settings {
@@ -99,6 +102,7 @@ impl Default for Settings {
             up: Up::Z,
             view: View::Signal,
             client_streams: 2,
+            offset_db: [0.0; 3],
         }
     }
 }
@@ -150,6 +154,8 @@ pub struct Engine {
     settings: Settings,
     devices: Vec<Device>,
     devices_file: Option<String>,
+    /// Measured points.
+    survey: Vec<Point>,
     walls: Option<Arc<WallMap>>,
     field: Option<Arc<Field>>,
     coverage: Option<Arc<Coverage>>,
@@ -166,6 +172,7 @@ impl Default for Engine {
             settings: Settings::default(),
             devices: devices::generic(),
             devices_file: None,
+            survey: Vec::new(),
             walls: None,
             field: None,
             coverage: None,
@@ -234,8 +241,25 @@ pub const COMMANDS: &[(&str, &str)] = &[
         "{id, name?, height?, device? | eirp_dbm?, channels?: {band: channel | {channel, width} | null}}",
     ),
     (
+        "survey.add",
+        "{at: [x, y], band, rssi_dbm, router?} → add one measured point (router: the one it was measured from; none: the strongest)",
+    ),
+    (
+        "survey.calibrate",
+        "{apply?: bool} → fit the path-loss exponent and a per-band offset to the measured points; the error before and after; apply: use them",
+    ),
+    ("survey.clear", "{} → forget the measured points"),
+    (
+        "survey.compare",
+        "{points?: bool} → measured against predicted for each band: mean error, RMS, largest (points: each one)",
+    ),
+    (
+        "survey.import",
+        "{path: *.csv | *.json} → read measured points (CSV columns x, y, band, rssi_dbm, router?; mm and dBm), replacing any",
+    ),
+    (
         "settings.set",
-        "{band?: 2.4|5|6, view?: signal|second|serving|overlap|rate|leakage, client_streams?: 1-4, grid_step?, client_height?, exponent?, slice_height?, cap_eirp?, close_gaps?, up?}",
+        "{band?: 2.4|5|6, view?: signal|second|serving|overlap|rate|leakage, client_streams?: 1-4, offset_db?: {band: dB}, grid_step?, client_height?, exponent?, slice_height?, cap_eirp?, close_gaps?, up?}",
     ),
 ];
 
@@ -401,6 +425,10 @@ impl Engine {
         &self.devices
     }
 
+    pub fn survey(&self) -> &[Point] {
+        &self.survey
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -449,6 +477,23 @@ impl Engine {
             "project.save" => self.project_save(command, p),
             "project.open" => self.project_open(command, p),
             "report.export" => self.report_export(command, p),
+            "survey.import" => self.survey_import(command, p),
+            "survey.add" => {
+                let point = survey::from_json(p).map_err(|e| bad(command, e))?;
+                if self.survey.len() >= survey::MAX_POINTS {
+                    return Err(bad(command, format!("at most {} points", survey::MAX_POINTS)));
+                }
+                self.survey.push(point);
+                self.revision = self.revision.wrapping_add(1);
+                Ok(json!({"points": self.survey.len()}))
+            }
+            "survey.clear" => {
+                self.survey.clear();
+                self.revision = self.revision.wrapping_add(1);
+                Ok(json!({"points": 0}))
+            }
+            "survey.compare" => self.survey_compare(command, p),
+            "survey.calibrate" => self.survey_calibrate(command, p),
             other => Err(EngineError::Unknown(other.to_string())),
         }
     }
@@ -824,6 +869,22 @@ impl Engine {
                 )
             })?;
         }
+        if let Some(v) = p.get("offset_db").filter(|v| !v.is_null()) {
+            let m = v
+                .as_object()
+                .ok_or_else(|| bad(command, "`offset_db` is {\"2.4\", \"5\", \"6\": dB}"))?;
+            for (k, v) in m {
+                let band = Band::parse(k)
+                    .ok_or_else(|| bad(command, "`offset_db` keys are \"2.4\", \"5\" and \"6\""))?;
+                let x = v
+                    .as_f64()
+                    .filter(|x| x.is_finite() && (-30.0..=30.0).contains(x))
+                    .ok_or_else(|| bad(command, "an offset is -30 to 30 dB"))?;
+                if let Some(slot) = s.offset_db.get_mut(band.index()) {
+                    *slot = x;
+                }
+            }
+        }
         if let Some(v) = ranged(command, p, "client_streams", 1.0, 4.0)? {
             if v.fract() != 0.0 {
                 return Err(bad(command, "`client_streams` is 1, 2, 3 or 4"));
@@ -875,6 +936,7 @@ impl Engine {
             "band": s.band.name(),
             "view": s.view.id(),
             "client_streams": s.client_streams,
+            "offset_db": band_map(&s.offset_db.map(Some)),
             "grid_step": s.grid_step,
             "client_height": s.client_height,
             "exponent": s.exponent,
@@ -901,6 +963,7 @@ impl Engine {
         Model {
             exponent: self.settings.exponent,
             client_height: self.settings.client_height,
+            offset_db: self.settings.offset_db,
         }
     }
 
@@ -1370,6 +1433,20 @@ impl Engine {
             .into_iter()
             .filter_map(|(k, v)| v.map(|v| (k.to_string(), v)))
             .collect();
+            if !self.survey.is_empty() {
+                let rows_m = self.survey_terms();
+                let e = Self::errors_json(&rows_m);
+                if let (Some(n), Some(mean), Some(rms)) = (
+                    e[band.name()]["points"].as_u64(),
+                    e[band.name()]["mean_error_db"].as_f64(),
+                    e[band.name()]["rms_db"].as_f64(),
+                ) {
+                    rows.push((
+                        "Measured points: measured − predicted".to_string(),
+                        format!("{n} points, mean {mean:+.1} dB, RMS {rms:.1} dB"),
+                    ));
+                }
+            }
             let several = self.routers.len() > 1;
             let channels = self
                 .routers
@@ -1450,6 +1527,20 @@ impl Engine {
                     format!("{} m", m(s.close_gaps)),
                 ),
                 ("Model cut at".into(), format!("{} m", m(s.slice_height))),
+                (
+                    "Calibration offset".into(),
+                    Band::ALL
+                        .iter()
+                        .map(|b| {
+                            format!(
+                                "{} GHz {:+.1} dB",
+                                b.name(),
+                                s.offset_db.get(b.index()).copied().unwrap_or(0.0)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
             ],
             bands,
         };
@@ -1458,6 +1549,170 @@ impl Engine {
         Ok(
             json!({"path": path, "bands": report.bands.len(), "maps": report.bands.iter().map(|b| b.maps.len()).sum::<usize>(), "bytes": html.len()}),
         )
+    }
+
+    fn survey_import(&mut self, command: &str, p: &Value) -> Result<Value> {
+        let path = p
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| bad(command, "`path` is a CSV or JSON file of measured points"))?;
+        let lower = path.to_ascii_lowercase();
+        let json = lower.ends_with(".json");
+        if !json && !lower.ends_with(".csv") {
+            return Err(bad(command, "`path` must end in .csv or .json"));
+        }
+        let bytes = read_file(command, path)?;
+        let text = String::from_utf8(bytes)
+            .map_err(|_| bad(command, format!("{path}: not UTF-8 text")))?;
+        self.survey =
+            survey::parse(&text, json).map_err(|e| bad(command, format!("{path}: {e}")))?;
+        self.revision = self.revision.wrapping_add(1);
+        Ok(json!({"points": self.survey.len()}))
+    }
+
+    /// For each measured point: its band, the measured signal, the router it is compared with
+    /// (the one it names, or the strongest predicted), and that router's predicted signal and
+    /// fit terms. Points naming a router that isn't there, or with no router in their band, are
+    /// left out.
+    fn survey_terms(&mut self) -> Vec<(usize, f64, f64, survey::Term)> {
+        let Some(walls) = self.walls() else {
+            return Vec::new();
+        };
+        let emitters = self.emitters();
+        let model = self.model();
+        let mut scratch = Scratch::default();
+        let mut out = Vec::new();
+        for (i, pt) in self.survey.iter().enumerate() {
+            let pick = match &pt.router {
+                Some(name) => emitters.iter().find(|e| e.name == *name).and_then(|e| {
+                    model::signal_at(&walls, e, &model, pt.band, pt.at, &mut scratch)
+                        .map(|v| (v, e))
+                }),
+                None => emitters
+                    .iter()
+                    .filter_map(|e| {
+                        model::signal_at(&walls, e, &model, pt.band, pt.at, &mut scratch)
+                            .map(|v| (v, e))
+                    })
+                    .max_by(|a, b| a.0.total_cmp(&b.0)),
+            };
+            let Some((predicted, e)) = pick else { continue };
+            let Some(eirp) = e.eirp(pt.band) else {
+                continue;
+            };
+            let dz = e.height - model.client_height;
+            let d = (((pt.at[0] - e.at[0]).powi(2) + (pt.at[1] - e.at[1]).powi(2) + dz * dz)
+                .sqrt()
+                / 1000.0)
+                .max(model::MIN_DISTANCE_M);
+            let rest = pt.rssi_dbm - eirp
+                + model::fspl_1m(pt.band)
+                + walls.path_loss(e.at, pt.at, pt.band, &mut scratch);
+            out.push((
+                i,
+                pt.rssi_dbm,
+                predicted,
+                survey::Term {
+                    band: pt.band,
+                    log_d: d.log10(),
+                    rest,
+                },
+            ));
+        }
+        out
+    }
+
+    fn errors_json(rows: &[(usize, f64, f64, survey::Term)]) -> Value {
+        let round = |v: f64| (v * 10.0).round() / 10.0;
+        let mut m = serde_json::Map::new();
+        for band in Band::ALL {
+            let diffs: Vec<f64> = rows
+                .iter()
+                .filter(|r| r.3.band == band)
+                .map(|r| r.1 - r.2)
+                .collect();
+            if let Some(e) = survey::errors(&diffs) {
+                m.insert(
+                    band.name().to_string(),
+                    json!({"points": e.count, "mean_error_db": round(e.mean), "rms_db": round(e.rms), "max_abs_db": round(e.max_abs)}),
+                );
+            }
+        }
+        Value::Object(m)
+    }
+
+    fn survey_compare(&mut self, command: &str, p: &Value) -> Result<Value> {
+        if self.survey.is_empty() {
+            return Err(bad(
+                command,
+                "no measured points (survey.import or survey.add)",
+            ));
+        }
+        if self.plan.is_none() {
+            return Err(bad(command, "no plan is open (plan.open)"));
+        }
+        let rows = self.survey_terms();
+        let round = |v: f64| (v * 10.0).round() / 10.0;
+        let mut out = json!({
+            "points": self.survey.len(),
+            "compared": rows.len(),
+            "bands": Self::errors_json(&rows),
+        });
+        if p.get("points").and_then(Value::as_bool).unwrap_or(false) {
+            out["each"] = json!(rows.iter().map(|(i, measured, predicted, _)| json!({
+                "index": i, "at": self.survey.get(*i).map(|s| s.at), "band": self.survey.get(*i).map(|s| s.band.name()),
+                "measured_dbm": measured, "predicted_dbm": round(*predicted), "error_db": round(measured - predicted),
+            })).collect::<Vec<_>>());
+        }
+        Ok(out)
+    }
+
+    fn survey_calibrate(&mut self, command: &str, p: &Value) -> Result<Value> {
+        if self.survey.is_empty() {
+            return Err(bad(
+                command,
+                "no measured points (survey.import or survey.add)",
+            ));
+        }
+        let before = self.survey_terms();
+        if before.is_empty() {
+            return Err(bad(
+                command,
+                "no measured point can be compared: add routers in their bands, or name routers that are there",
+            ));
+        }
+        let terms: Vec<survey::Term> = before
+            .iter()
+            .map(|r| survey::Term {
+                band: r.3.band,
+                log_d: r.3.log_d,
+                rest: r.3.rest,
+            })
+            .collect();
+        let (exponent, offsets) = survey::fit(&terms, self.settings.exponent, 1.5, 6.0);
+        let saved = self.settings.clone();
+        self.settings.exponent = exponent;
+        for (slot, o) in self.settings.offset_db.iter_mut().zip(offsets) {
+            if let Some(o) = o {
+                *slot = o.clamp(-30.0, 30.0);
+            }
+        }
+        self.changed(false);
+        let after = self.survey_terms();
+        let fitted = self.settings.clone();
+        let apply = p.get("apply").and_then(Value::as_bool).unwrap_or(false);
+        if !apply {
+            self.settings = saved;
+            self.changed(false);
+        }
+        let round = |v: f64| (v * 100.0).round() / 100.0;
+        Ok(json!({
+            "exponent": round(fitted.exponent),
+            "offset_db": band_map(&offsets.map(|o| o.map(|v| round(v.clamp(-30.0, 30.0))))),
+            "before": Self::errors_json(&before),
+            "after": Self::errors_json(&after),
+            "applied": apply,
+        }))
     }
 
     fn project_save(&mut self, command: &str, p: &Value) -> Result<Value> {
@@ -1478,6 +1733,7 @@ impl Engine {
             // when read, so older projects open unchanged: the format name stays.
             "settings": self.settings_json(),
             "devices_file": self.devices_file,
+            "survey": self.survey.iter().map(|s| json!({"at": s.at, "band": s.band.name(), "rssi_dbm": s.rssi_dbm, "router": s.router})).collect::<Vec<_>>(),
         });
         let text =
             serde_json::to_string_pretty(&project).map_err(|e| bad(command, e.to_string()))?;
@@ -1528,6 +1784,14 @@ impl Engine {
                 }
             }
             fresh.execute("router.add", &params)?;
+        }
+        for s in project
+            .get("survey")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            fresh.execute("survey.add", s)?;
         }
         *self = fresh;
         self.revision = self.revision.wrapping_add(1);

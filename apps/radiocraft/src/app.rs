@@ -233,6 +233,17 @@ impl App {
                 self.status = Some((format!("{} {}", tr("Saved"), path.to_string_lossy()), false));
             }
             if ui
+                .button(tr("Measurements…"))
+                .on_hover_text(tr("Measured signal to compare with: CSV columns x, y, band, rssi_dbm, router (mm and dBm), or JSON"))
+                .clicked()
+                && let Some(path) = rfd::FileDialog::new()
+                    .add_filter(tr("Measurements"), &["csv", "json"])
+                    .pick_file()
+                && let Some(r) = self.run("survey.import", json!({"path": path.to_string_lossy()}))
+            {
+                self.status = Some((format!("{} {}", r["points"], tr("measured points read")), false));
+            }
+            if ui
                 .button(tr("Device file…"))
                 .on_hover_text(tr("A JSON list of devices: {id, name, eirp_dbm}"))
                 .clicked()
@@ -586,6 +597,51 @@ impl App {
                     );
                 });
         }
+        // Measured points: how far the prediction is from them, and a fit to them.
+        if !self.engine.survey().is_empty() {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(tr("Measurements")).strong());
+            let band = self.engine.settings().band;
+            if let Ok(v) = self.engine.execute("survey.compare", &json!({})) {
+                let b = &v["bands"][band.name()];
+                if let (Some(n), Some(mean), Some(rms)) = (
+                    b["points"].as_u64(),
+                    b["mean_error_db"].as_f64(),
+                    b["rms_db"].as_f64(),
+                ) {
+                    ui.label(format!(
+                        "{n} {} · {} {mean:+.1} dB · RMS {rms:.1} dB",
+                        tr("points"),
+                        tr("measured − predicted")
+                    ));
+                } else {
+                    ui.label(tr("None in this band"));
+                }
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .button(tr("Calibrate"))
+                    .on_hover_text(tr(
+                        "Fit the path-loss exponent and each band's offset to the measured points",
+                    ))
+                    .clicked()
+                    && let Some(r) = self.run("survey.calibrate", json!({"apply": true}))
+                {
+                    self.status = Some((
+                        format!(
+                            "{} {} · {}",
+                            tr("Calibrated: exponent"),
+                            r["exponent"],
+                            r["offset_db"]
+                        ),
+                        false,
+                    ));
+                }
+                if ui.button(tr("Clear")).clicked() {
+                    self.run("survey.clear", json!({}));
+                }
+            });
+        }
         ui.add_space(6.0);
         let key = match c.view {
             Map::Serving | Map::Overlap => tr("Key: share of the floor"),
@@ -735,6 +791,17 @@ impl App {
                     painter.add(egui::Shape::line(points, Stroke::new(1.2, colour)));
                 }
             }
+        }
+        // Measured points in the shown band: a dot in the measured signal's colour.
+        let band = self.engine.settings().band;
+        for pt in self.engine.survey().iter().filter(|pt| pt.band == band) {
+            let [r, g, b] = radiocraft_engine::model::colour(pt.rssi_dbm);
+            painter.circle(
+                to_screen(&self.view, pt.at),
+                4.0,
+                Color32::from_rgb(r, g, b),
+                Stroke::new(1.5, TOKENS.text),
+            );
         }
         // Routers.
         let pick = |v: &View, pos: Pos2, routers: &[radiocraft_engine::Router]| -> Option<u64> {

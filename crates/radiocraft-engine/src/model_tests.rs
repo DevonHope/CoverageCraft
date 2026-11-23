@@ -28,6 +28,7 @@ fn emitter(at: [f64; 2], eirp: f64) -> Emitter {
 const MODEL: Model = Model {
     exponent: 2.2,
     client_height: 1000.0,
+    offset_db: [0.0; 3],
 };
 
 /// FSPL at 1 m: 20·log10(5500) − 27.55 = 74.807 − 27.55 = 47.257 dB.

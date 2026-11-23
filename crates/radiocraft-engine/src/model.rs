@@ -506,6 +506,8 @@ pub struct Model {
     pub exponent: f64,
     /// The receiver's height (mm, world z).
     pub client_height: f64,
+    /// Added to every signal in each band (dB): a calibration to measurements, 0 by default.
+    pub offset_db: [f64; 3],
 }
 
 /// The signal `e` gives at `p` in `band` (dBm); `None` when it has no radio in `band`.
@@ -520,13 +522,15 @@ pub fn signal_at(
     let eirp = e.eirp(band)?;
     let dz = e.height - model.client_height;
     let d = ((p[0] - e.at[0]).powi(2) + (p[1] - e.at[1]).powi(2) + dz * dz).sqrt() / 1000.0;
-    Some(rssi(
-        eirp,
-        band,
-        model.exponent,
-        d,
-        walls.path_loss(e.at, p, band, scratch),
-    ))
+    Some(
+        rssi(
+            eirp,
+            band,
+            model.exponent,
+            d,
+            walls.path_loss(e.at, p, band, scratch),
+        ) + model.offset_db.get(band.index()).copied().unwrap_or(0.0),
+    )
 }
 
 /// The best signal any of `emitters` gives at `p` in `band`, and which emitter gives it; `None`

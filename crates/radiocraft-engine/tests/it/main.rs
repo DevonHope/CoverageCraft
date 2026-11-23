@@ -406,6 +406,111 @@ fn suggested_spots_beat_a_corner() {
     assert!(e.execute("router.suggest", &json!({"count": 1.5})).is_err());
 }
 
+/// Made-up measurements from a model with a known exponent and offsets: the comparison shows the
+/// default model's error, and calibrating finds the exponent and offsets again.
+#[test]
+fn calibration_finds_a_known_model() {
+    let dir = std::env::temp_dir().join(format!("radiocraft-survey-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let setup = |e: &mut Engine| {
+        run(
+            e,
+            "plan.open",
+            json!({"path": fixture("cadcraft-apartment.dxf")}),
+        );
+        run(
+            e,
+            "material.set",
+            json!({"source": "A-WALL", "material": "concrete"}),
+        );
+        run(
+            e,
+            "router.add",
+            json!({"at": [2500, 2500], "height": 2400, "device": "generic-router", "name": "Hall"}),
+        );
+    };
+    // The "truth": exponent 3.0, 5 GHz 4 dB lower and 2.4 GHz 2 dB higher than the plain model.
+    let mut truth = Engine::new();
+    setup(&mut truth);
+    run(
+        &mut truth,
+        "settings.set",
+        json!({"exponent": 3.0, "offset_db": {"5": -4, "2.4": 2}}),
+    );
+    let mut csv = String::from("x,y,band,rssi_dbm,router\n");
+    for x in (1000..12000).step_by(1500) {
+        for y in (1000..8000).step_by(1500) {
+            let at = run(&mut truth, "coverage.at", json!({"at": [x, y]}));
+            for band in ["2.4", "5"] {
+                let v = at["bands"][band]["rssi_dbm"].as_f64().unwrap();
+                csv += &format!("{x},{y},{band},{v},Hall\n");
+            }
+        }
+    }
+    let path = dir.join("survey.csv");
+    std::fs::write(&path, &csv).unwrap();
+    let mut e = Engine::new();
+    setup(&mut e);
+    let n = run(
+        &mut e,
+        "survey.import",
+        json!({"path": path.to_string_lossy()}),
+    );
+    assert_eq!(n["points"], 80);
+    let before = run(&mut e, "survey.compare", json!({}));
+    assert!(
+        before["bands"]["5"]["rms_db"].as_f64().unwrap() > 3.0,
+        "{before}"
+    );
+    // Without apply, nothing changes.
+    let fit = run(&mut e, "survey.calibrate", json!({}));
+    assert_eq!(e.settings().exponent, 2.2);
+    assert!(
+        (fit["exponent"].as_f64().unwrap() - 3.0).abs() < 0.05,
+        "{fit}"
+    );
+    assert!(
+        (fit["offset_db"]["5"].as_f64().unwrap() + 4.0).abs() < 0.3,
+        "{fit}"
+    );
+    assert!(
+        (fit["offset_db"]["2.4"].as_f64().unwrap() - 2.0).abs() < 0.3,
+        "{fit}"
+    );
+    assert!(fit["after"]["5"]["rms_db"].as_f64().unwrap() < 0.2, "{fit}");
+    run(&mut e, "survey.calibrate", json!({"apply": true}));
+    assert!((e.settings().exponent - 3.0).abs() < 0.05);
+    // The survey and the calibration are saved with the project.
+    let project = dir.join("p.rcraft");
+    run(
+        &mut e,
+        "project.save",
+        json!({"path": project.to_string_lossy()}),
+    );
+    let mut again = Engine::new();
+    run(
+        &mut again,
+        "project.open",
+        json!({"path": project.to_string_lossy()}),
+    );
+    assert_eq!(again.survey().len(), 80);
+    assert_eq!(again.settings().offset_db, e.settings().offset_db);
+    assert!(
+        again
+            .execute(
+                "survey.add",
+                &json!({"at": [0, 0], "band": "5", "rssi_dbm": 10})
+            )
+            .is_err()
+    );
+    assert!(
+        again
+            .execute("survey.import", &json!({"path": project.to_string_lossy()}))
+            .is_err()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A project saved before channels and maps existed opens, with them unset.
 #[test]
 fn an_older_project_opens() {
@@ -451,6 +556,15 @@ fn hostile_commands_are_refused() {
         ("settings.set", json!({"band": "60"})),
         ("settings.set", json!({"grid_step": 0})),
         ("settings.set", json!({"view": "heat"})),
+        ("settings.set", json!({"offset_db": {"5": 99}})),
+        ("settings.set", json!({"offset_db": 3})),
+        ("survey.compare", json!({})),
+        ("survey.calibrate", json!({})),
+        (
+            "survey.add",
+            json!({"at": [0, 0], "band": "60", "rssi_dbm": -50}),
+        ),
+        ("survey.import", json!({"path": "/nonexistent.csv"})),
         ("settings.set", json!({"client_streams": 5})),
         ("settings.set", json!({"client_streams": 1.5})),
         ("router.add", json!({"at": [0, 0], "channels": {"5": 37}})),
