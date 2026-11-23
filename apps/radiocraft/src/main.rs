@@ -1,6 +1,7 @@
 //! RadioCraft: plan Wi-Fi coverage on floor plans from CADCraft and models from SolidCraft.
 
 mod app;
+mod captions;
 mod i18n;
 mod theme;
 
@@ -23,17 +24,28 @@ fn main() -> eframe::Result {
             _ => path = Some(a),
         }
     }
-    // The title bar every Craft app wears: on macOS the app's bar sits under the window buttons
-    // (craft-window's Inset frame); elsewhere the system draws it, for now.
-    let pref = if cfg!(target_os = "macos") {
-        TitleBarPref::Integrated
-    } else {
-        TitleBarPref::System
-    };
-    let decision = decide_for(Prefix::new("RADIOCRAFT"), Backend::from_env(), pref);
+    // The title bar every Craft app wears, as craft-window decides it: on macOS the app's bar sits
+    // under the window buttons (Inset); on Windows and most Linux desktops the app's bar is the
+    // title bar and draws the desktop's window buttons (Integrated); tiling desktops and
+    // RADIOCRAFT_TITLEBAR=system keep the system's.
+    let mut decision = decide_for(
+        Prefix::new("RADIOCRAFT"),
+        Backend::from_env(),
+        TitleBarPref::Integrated,
+    );
+    if let Some(family) = captions::forced_family() {
+        decision.frame = Frame::Integrated(craft_window::policy::Captions {
+            family,
+            layout: craft_window::Layout::default(),
+        });
+    }
     let leading = match &decision.frame {
         Frame::Inset(inset) => inset.leading,
         _ => 0.0,
+    };
+    let window_buttons = match &decision.frame {
+        Frame::Integrated(c) => Some((c.family, c.layout.clone())),
+        _ => None,
     };
     let viewport = apply(
         egui::ViewportBuilder::default()
@@ -52,7 +64,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |_cc| {
             #[allow(unused_mut)]
-            let mut app = app::App::new(path, script, screenshot, leading);
+            let mut app = app::App::new(path, script, screenshot, leading, window_buttons);
             // The menus go in the macOS menu bar; if AppKit refuses them they stay in the window.
             #[cfg(target_os = "macos")]
             {

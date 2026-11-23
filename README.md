@@ -24,7 +24,11 @@ see [What the numbers mean](#what-the-numbers-mean).
   right, or from a view saved in the SolidCraft design, and cut at a depth toward you; routers
   stay where they are in the building when you change it.
 - **The Craft header.** The same title bar, menus (in the macOS menu bar), toolbar, status bar
-  and Home page as the other Craft apps, through craft-libs' `craft-window` and `craft-menu`.
+  and Home page as the other Craft apps, through craft-libs' `craft-window` and `craft-menu`. On
+  Windows and Linux the app's bar is the title bar, with the desktop's window buttons in its
+  order and look (Windows, GNOME's Adwaita, KDE's Breeze) and resizable edges; tiling desktops,
+  and `RADIOCRAFT_TITLEBAR=system`, keep the system's title bar. `RADIOCRAFT_CAPTIONS=windows`
+  (or `adwaita`, `breeze`, `generic`) shows a desktop's buttons on any platform, for checking.
 - **Materials.** Each layer or object is concrete, drywall, low-E glass, interior glass, metal,
   a wood door, "not a wall", or "guess from thickness" (drywall below 140 mm, concrete from there).
   The first guess comes from the names (`glass`, `door`, `fridge`, `sofa`…); change any of them.
@@ -161,7 +165,6 @@ Known limits:
   `RADIOCRAFT_SOLIDCRAFT_CLI` can point at another build's `solidcraft-cli`.
 - Saved SolidCraft views are read when they are Z-up; a DXF's named views are used when they
   look straight down in model space (twist ignored; paper-space views and layouts aren't offered).
-- The header uses the system title bar on Windows and Linux for now.
 
 Beta. Working: DXF and OBJ/STL plans, materials, routers, devices, channels, the three bands,
 six maps and their figures, the probe, spot suggestions, measured points and calibration, HTML

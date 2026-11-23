@@ -59,6 +59,8 @@ pub struct App {
     pub native: Option<craft_menu::NativeMenu>,
     /// Room kept at the bar's leading edge for the macOS window buttons (pt).
     leading: f32,
+    /// The window buttons the app draws (Windows, Linux): the desktop's family and layout.
+    window_buttons: Option<(craft_window::policy::CaptionFamily, craft_window::Layout)>,
     /// Whether the window is movable from the bar now (macOS).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     movable: Option<bool>,
@@ -103,6 +105,7 @@ impl App {
         script: Option<String>,
         screenshot: Option<String>,
         leading: f32,
+        window_buttons: Option<(craft_window::policy::CaptionFamily, craft_window::Layout)>,
     ) -> App {
         let mut app = App {
             engine: Engine::new(),
@@ -126,6 +129,7 @@ impl App {
             logo: None,
             native: None,
             leading,
+            window_buttons,
             movable: None,
             pointer: None,
             pending: None,
@@ -1211,6 +1215,9 @@ impl eframe::App for App {
             egui::CentralPanel::default().show(ui, |ui| self.start_page(ui));
         }
         self.about_window(&ctx);
+        if self.window_buttons.is_some() {
+            crate::captions::resize_zones(ui);
+        }
         #[cfg(target_os = "macos")]
         craft_window::title_bar::sync_movable(&ctx, &mut self.movable);
     }

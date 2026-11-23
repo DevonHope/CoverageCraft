@@ -16,7 +16,8 @@ how this repository applies it.
 - `apps/radiocraft`: the egui window. It only calls `Engine::execute` and reads the engine's
   state; a feature that exists only in the window is a bug. `header.rs` is the Craft header
   (craft-window's title bar, craft-menu's menus, toolbar, status bar, Home): every menu item is a
-  command id run by `App::menu_command`.
+  command id run by `App::menu_command`; `captions.rs` draws the window buttons and resize edges
+  where the app's bar is the title bar (Windows, Linux).
 - `apps/radiocraft-cli`: the same commands without a window, plus scripts.
 - Tests: unit tests beside the code (`*_tests.rs` or `mod tests`); integration tests in
   `crates/radiocraft-engine/tests/it/main.rs`, one binary. Fixtures in `tests/fixtures/`, each

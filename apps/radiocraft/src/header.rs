@@ -335,8 +335,15 @@ impl App {
         let rect = ui.max_rect();
         craft_window::title_bar::empty_area(ui, rect);
         let mut commands: Vec<CommandRef> = Vec::new();
+        // The window buttons the app draws itself (Windows, Linux), at the window's very edges.
+        let (left, right) = self
+            .window_buttons
+            .as_ref()
+            .map_or((0.0, 0.0), |(family, layout)| {
+                crate::captions::reserved(*family, layout)
+            });
         ui.horizontal_centered(|ui| {
-            ui.add_space(self.leading);
+            ui.add_space(self.leading + left);
             let logo = self.logo.get_or_insert_with(|| {
                 ctx.load_texture(
                     "logo",
@@ -429,6 +436,7 @@ impl App {
                 });
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add_space(right);
                 if ui
                     .button("?")
                     .on_hover_text(tr("About RadioCraft"))
@@ -443,6 +451,11 @@ impl App {
                 );
             });
         });
+        if let Some((family, layout)) = &self.window_buttons {
+            let edges = ctx.content_rect();
+            let bar = egui::Rect::from_x_y_ranges(edges.x_range(), rect.y_range());
+            crate::captions::buttons(ui, bar, *family, layout);
+        }
         for c in commands {
             self.menu_command(&ctx, &c);
         }

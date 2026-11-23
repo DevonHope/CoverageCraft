@@ -16,6 +16,10 @@ pub struct Tokens {
     /// The app bar's background, and the open plan's tab on it.
     pub bar: Color32,
     pub tab: Color32,
+    /// Window buttons (Windows, Linux): Close on hover, the others on hover, the round ones at rest.
+    pub caption_close: Color32,
+    pub caption_hover: Color32,
+    pub caption_rest: Color32,
     /// Heatmap opacity over the canvas (0–255).
     pub heatmap_alpha: u8,
     pub router_radius: f32,
@@ -32,6 +36,9 @@ pub const TOKENS: Tokens = Tokens {
     tooltip: Color32::from_rgba_premultiplied(16, 18, 22, 230),
     bar: Color32::from_rgb(18, 21, 26),
     tab: Color32::from_rgb(40, 46, 56),
+    caption_close: Color32::from_rgb(196, 43, 28),
+    caption_hover: Color32::from_rgb(52, 58, 68),
+    caption_rest: Color32::from_rgb(36, 41, 49),
     heatmap_alpha: 220,
     router_radius: 8.0,
 };
