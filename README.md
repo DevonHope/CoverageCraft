@@ -2,9 +2,10 @@
 
 <img src="assets/icon.svg" alt="RadioCraft's logo: a router sending out rings of signal in the heatmap's colours, which turn weaker where they have passed the corner of a wall" width="128">
 
-RadioCraft plans Wi-Fi coverage from the floor plans and models you already have. Open a DXF plan
-from CADCraft, or an OBJ or STL model exported from SolidCraft. Tell it what each layer or object
-is made of, place routers and access points, and see the predicted signal across the floor.
+RadioCraft plans Wi-Fi coverage from the floor plans and models you already have. Open a DXF or
+DWG plan from CADCraft, a SolidCraft design, or an OBJ or STL model. Tell it what each layer or
+object is made of, place routers and access points, and see the predicted signal across the floor,
+or across several floors.
 
 ![RadioCraft with CADCraft's example apartment: two routers on overlapping 5 GHz channels (36 at 80 MHz and 44), and the map of where a device hears the other one on its channel](docs/screenshot.png)
 
@@ -190,10 +191,12 @@ Known limits:
 - Saved SolidCraft views are read when they are Z-up; a DXF's named views are used when they
   look straight down in model space (twist ignored; paper-space views and layouts aren't offered).
 
-Beta. Working: DXF and OBJ/STL plans, materials, routers, devices, channels, the three bands,
-six maps and their figures, the probe, spot suggestions, measured points and calibration, HTML
-reports, projects, PNG export, the CLI and scripts. Not yet: several floors, antenna patterns,
-live scanning of networks, translations beyond English (strings go through `i18n::tr` already).
+Beta. Working: DXF, DWG, SolidCraft and OBJ/STL plans, viewpoints, several floors, materials,
+routers, devices, channels, the three bands, six maps and their figures, the probe, spot
+suggestions, measured points and calibration (wall losses included), undo and redo, HTML reports,
+projects, PNG export, the CLI and scripts. Not yet: channel suggestions, antenna patterns,
+openings in slabs, live scanning of networks, translations beyond English (strings go through
+`i18n::tr` already).
 See [docs/plan.md](docs/plan.md).
 
 ## Licence
